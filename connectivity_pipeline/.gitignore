@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.so
+.venv/
+venv/
+env/
+
+# Data files (often large — commit selectively)
+data/*.zip
+data/*.geojson
+data/cache/
+
+# Outputs
+*.geojson
+pci_results.geojson
+bci_results.geojson
+hex_grid_with_mass.geojson
+*.html
+!webapp/templates/*.html
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OSMnx cache
+cache/
+
+# Environment
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+
+# OS
+.DS_Store
+Thumbs.db

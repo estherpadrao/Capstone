@@ -1,0 +1,29 @@
+name: Lint & Import Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install flake8 pyflakes
+          pip install --no-deps flask geopandas pandas numpy networkx scipy shapely
+
+      - name: Lint with flake8 (errors only)
+        run: |
+          flake8 core/ pci/ bci/ analysis/ webapp/ \
+            --count --select=E9,F63,F7,F82 \
+            --show-source --statistics
