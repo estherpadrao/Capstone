@@ -20,10 +20,12 @@ from core.h3_helper import HexGrid
 # ---------------------------------------------------------------------------
 
 DEFAULT_AMENITY_WEIGHTS: Dict[str, float] = {
-    "health":     0.319,
-    "education":  0.276,
-    "parks":      0.255,
-    "community":  0.148,
+    "health":      0.319,
+    "education":   0.276,
+    "parks":       0.255,
+    "community":   0.148,
+    "food_retail": 0.0,
+    "transit":     0.0,
 }
 
 DEFAULT_DECAY_COEFFICIENTS: Dict[str, float] = {

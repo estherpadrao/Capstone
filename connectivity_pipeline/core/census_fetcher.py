@@ -178,8 +178,9 @@ class CensusDataFetcher:
         """
         Spatially join a Census variable onto the hex grid.
 
-        For income (median values): uses centroid point-in-polygon join,
-        matching the notebook implementation exactly.
+        For income (median values): centroid point-in-polygon join — each hex
+        gets the income of the tract containing its centroid, with
+        nearest-neighbor fallback for unmatched hexes.
         For count variables (population, labour): uses area-weighted sum.
 
         Parameters
@@ -200,53 +201,59 @@ class CensusDataFetcher:
         county_median = tracts[variable].median()
 
         if agg == "mean":
-            # Income: centroid point-in-polygon join (matches notebook)
-            centroids = grid.gdf.copy().to_crs("EPSG:4326")
-            centroids["geometry"] = centroids.geometry.centroid
-            centroids = centroids[["hex_id", "geometry"]]
+            # Income: centroid-based spatial join — each hex gets the income
+            # of the tract containing its centroid, with nearest-neighbor fallback.
+            centroids = grid.centroids.copy()
+            tract_geoms = tracts[["geometry", variable]].copy()
 
-            joined = gpd.sjoin(
-                centroids,
-                tracts.to_crs("EPSG:4326")[["geometry", variable]],
-                how="left",
-                predicate="within",
-            )
+            if centroids.crs != tract_geoms.crs:
+                tract_geoms = tract_geoms.to_crs(centroids.crs)
 
-            # Nearest-neighbour fallback for unmatched centroids
-            unmatched = joined[variable].isna()
-            if unmatched.any():
-                nearest = gpd.sjoin_nearest(
-                    centroids.loc[unmatched],
-                    tracts.to_crs("EPSG:4326")[["geometry", variable]],
-                    how="left",
-                )
-                joined.loc[unmatched, variable] = nearest[variable].values
+            joined = gpd.sjoin(centroids, tract_geoms, how="left", predicate="within")
+            matched = joined[variable].notna().sum()
+            total = len(joined)
+            print(f"   Matched {matched}/{total} hexes to tracts")
+
+            # Nearest-neighbor fallback for unmatched hexes
+            unmatched_mask = joined[variable].isna()
+            if unmatched_mask.any():
+                unmatched_centroids = centroids.loc[unmatched_mask]
+                if len(unmatched_centroids) > 0:
+                    try:
+                        nearest = gpd.sjoin_nearest(unmatched_centroids, tract_geoms, how="left")
+                        for idx in nearest.index:
+                            if idx in joined.index:
+                                joined.loc[idx, variable] = nearest.loc[idx, variable]
+                        print(f"   Fixed {unmatched_mask.sum()} unmatched via nearest neighbor")
+                    except Exception as e:
+                        print(f"   ⚠️ Nearest neighbor failed: {e}")
 
             result = joined.set_index("hex_id")[variable]
             result = result.fillna(county_median)
 
         else:
             # Count variables: area-weighted sum (population, labour)
+            # Weight = intersection_area / total_intersection_area_for_hex
+            # This ensures weights sum to 1 per hex — matches notebook exactly
             hex_gdf = grid.gdf[["hex_id", "geometry"]].copy()
             intersected = gpd.overlay(
-                hex_gdf.to_crs("EPSG:4326"),
-                tracts.to_crs("EPSG:4326"),
+                hex_gdf.to_crs(epsg=3857),
+                tracts.to_crs(epsg=3857),
                 how="intersection",
             )
-            intersected = intersected.to_crs(epsg=3857)
-            intersected["isect_area"] = intersected.geometry.area
+            intersected["area"] = intersected.geometry.area
+            intersected[variable] = pd.to_numeric(intersected[variable], errors="coerce")
+            intersected = intersected.dropna(subset=[variable])
 
-            tract_areas = tracts.to_crs(epsg=3857).copy()
-            tract_areas["tract_area"] = tract_areas.geometry.area
-            intersected = intersected.merge(
-                tract_areas[["GEOID", "tract_area"]], on="GEOID", how="left"
+            # Area-weighted average per hex (weights sum to 1 within each hex)
+            result = intersected.groupby("hex_id").apply(
+                lambda d: (d[variable] * d["area"]).sum() / d["area"].sum()
+                if d["area"].sum() > 0 else np.nan
             )
-            intersected["weight"] = (
-                intersected["isect_area"] / intersected["tract_area"].replace(0, np.nan)
-            )
-            intersected["weighted_val"] = intersected[variable] * intersected["weight"]
-            result = intersected.groupby("hex_id")["weighted_val"].sum()
+            # Count variables: missing hexes get 0, not median
+            return result.reindex(grid.gdf["hex_id"]).fillna(0)
 
+        # Income: missing hexes get county median
         return result.reindex(grid.gdf["hex_id"]).fillna(county_median)
 
     # ------------------------------------------------------------------
@@ -274,3 +281,95 @@ class CensusDataFetcher:
                 grid, CENSUS_VARS["labour"], agg="sum"
             ),
         }
+
+    def assign_neighborhoods_to_hexes(
+        self,
+        grid: HexGrid,
+        osm_neighborhoods_gdf=None,
+    ) -> pd.Series:
+        """
+        Assign neighbourhood names to hex cells via area-weighted polygon overlap.
+
+        Priority
+        --------
+        1. *osm_neighborhoods_gdf* — GeoDataFrame with ``name`` + ``geometry``
+           from OpenStreetMap (actual names like "Mission District").
+           Used when provided and non-empty.
+        2. Census TIGER tract names ("Census Tract 101.02") as fallback.
+
+        Split hexes
+        -----------
+        Every source polygon covering ≥ 10 % of a hex area is listed with its
+        share, e.g. "Mission District (65%) / Noe Valley (35%)".
+
+        Returns
+        -------
+        pd.Series indexed by hex_id with neighbourhood name strings.
+        """
+        use_osm = (
+            osm_neighborhoods_gdf is not None
+            and not osm_neighborhoods_gdf.empty
+            and "name" in osm_neighborhoods_gdf.columns
+        )
+
+        if use_osm:
+            source = (
+                osm_neighborhoods_gdf[["name", "geometry"]]
+                .copy()
+                .dropna(subset=["geometry", "name"])
+                .rename(columns={"name": "_name"})
+            )
+            label = "OSM neighbourhood"
+        else:
+            tracts   = self.fetch_tiger_tracts()
+            name_col = (
+                "NAMELSAD" if "NAMELSAD" in tracts.columns else
+                "NAME"     if "NAME"     in tracts.columns else
+                "GEOID"
+            )
+            source = (
+                tracts[[name_col, "geometry"]]
+                .copy()
+                .dropna(subset=["geometry"])
+                .rename(columns={name_col: "_name"})
+            )
+            # Drop water-only tracts (e.g. Census Tract 9902 = San Francisco Bay)
+            source = source[~source["_name"].astype(str).str.contains("9901","9902", na=False)]
+            label = "census tract"
+
+        hex_gdf = grid.gdf[["hex_id", "geometry"]].copy()
+
+        try:
+            intersected = gpd.overlay(
+                hex_gdf.to_crs(epsg=3857),
+                source.to_crs(epsg=3857),
+                how="intersection",
+            )
+        except Exception as exc:
+            print(f"   ⚠  Neighbourhood overlay failed: {exc}")
+            return pd.Series("Unknown", index=grid.gdf["hex_id"]).rename("neighborhood")
+
+        intersected["_area"] = intersected.geometry.area
+
+        def _fmt(group):
+            total = group["_area"].sum()
+            if total == 0:
+                return "Unknown"
+            grp = group.copy()
+            grp["_pct"] = grp["_area"] / total
+            grp = grp.sort_values("_pct", ascending=False)
+            sig = grp[grp["_pct"] >= 0.10]
+            if len(sig) == 0:
+                return str(grp.iloc[0]["_name"])
+            if len(sig) == 1:
+                return str(sig.iloc[0]["_name"])
+            parts = [f"{r['_name']} ({r['_pct']:.0%})" for _, r in sig.iterrows()]
+            return " / ".join(parts)
+
+        result = (
+            intersected.groupby("hex_id")
+            .apply(_fmt)
+            .rename("neighborhood")
+        )
+        print(f"   📍 {len(result)} hexes assigned to {label} neighbourhoods")
+        return result.reindex(grid.gdf["hex_id"]).fillna("Unknown")

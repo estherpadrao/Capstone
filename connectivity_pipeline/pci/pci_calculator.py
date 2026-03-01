@@ -132,40 +132,34 @@ class HansenAccessibilityModel:
 
         mass_values = self.mass._composite.to_dict()
 
-        # Build income-based effective time penalty per hex.
-        # Lower income -> travel cost is a larger fraction of hourly wage
-        # -> adds effective minutes to each trip (cost-of-time approach).
-        # t_effective = t_travel + (mode_cost / hourly_wage) * 60
-        # This means poorer hexes face genuinely higher effective impedance
-        # to every destination, not just a flat output scaling.
-        time_penalty: Dict[str, float] = {}
-        if income_data is not None:
-            median_wage = self.net.median_hourly_wage
-            for hx in self.hex_ids:
-                inc = income_data.get(hx) if isinstance(income_data, dict) \
-                      else income_data.get(hx, np.nan)
-                if pd.isna(inc) or inc <= 0:
-                    hourly = median_wage
-                else:
-                    hourly = max(inc / 2080, 7.25)  # annual -> hourly, min wage floor
-                # Extra minutes of effective travel time due to cost burden
-                # Capped at 30 min so very low incomes don't zero out all access
-                time_penalty[hx] = min(mode_cost / hourly * 60, 30.0)
-        else:
-            time_penalty = {hx: 0.0 for hx in self.hex_ids}
+        median_wage = self.net.median_hourly_wage
 
         scores: Dict[str, float] = {}
         for src_hex, dest_dict in self._travel_times.items():
-            acc = 0.0
-            extra_t = time_penalty.get(src_hex, 0.0)
+
+            # Income adjustment — matches notebook implementation exactly
+            cost_penalty = 0.0
+            if income_data is not None and mode_cost > 0:
+                if src_hex in income_data.index:
+                    annual_income = income_data[src_hex]
+                    if pd.notna(annual_income) and annual_income > 0:
+                        hourly_wage = annual_income / 2080
+                        hourly_wage = max(hourly_wage, 7.25)
+                    else:
+                        hourly_wage = median_wage
+                else:
+                    hourly_wage = median_wage
+                cost_penalty = (mode_cost / hourly_wage) * 60
+
+            # Sum over all reachable destinations
+            total = 0.0
             for dest_hex, t_min in dest_dict.items():
                 m = mass_values.get(dest_hex, 0.0)
-                if m <= 0 or t_min <= 0:
+                if m <= 0:
                     continue
-                # Effective travel time includes cost-of-time penalty
-                t_eff = t_min + extra_t
-                acc += m * np.exp(-beta * t_eff)
-            scores[src_hex] = acc
+                t_eff = t_min + cost_penalty
+                total += m * np.exp(-beta * t_eff)
+            scores[src_hex] = total
 
         result = pd.Series(scores).reindex(self.hex_ids).fillna(0)
         self._accessibility = result
@@ -199,15 +193,15 @@ class TopographicPCICalculator:
     def compute_pci(
         self,
         active_lambda: float = 0.30,
-        mask_parks: bool = False,
+        mask_parks: bool = True,
         park_threshold: float = 0.90,
     ) -> pd.Series:
         """
-        Compute final PCI scores — matches notebook implementation exactly.
+        Compute final PCI scores.
 
-        Steps (same order as notebook):
+        Steps:
         1. Normalise accessibility to [0, 100]
-        2. Compute active street score (food_retail percentile rank)
+        2. Compute active street score (food_retail percentile rank [0, 1])
         3. Apply multiplier: PCI_raw = acc_norm * (1 + lambda * active)
         4. Re-normalise to [0, 100]
         5. Optionally mask park-dominated hexes
@@ -215,7 +209,7 @@ class TopographicPCICalculator:
         if self.hansen._accessibility is None:
             raise RuntimeError("Call hansen_model.compute_accessibility() first.")
 
-        # Step 1: normalise accessibility to [0, 100] first (notebook order)
+        # Step 1: normalise accessibility to [0, 100]
         acc = self.hansen._accessibility.copy()
         if acc.max() > acc.min():
             acc_norm = (acc - acc.min()) / (acc.max() - acc.min()) * 100

@@ -26,7 +26,16 @@ Parameters the user CANNOT change (locked to the city):
   - MAX_TRAVEL_TIME
 """
 
+import os
 from typing import Dict, Any, Optional
+
+# Anchor all relative data paths to the project root (parent of this file's directory)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _data(filename: str) -> str:
+    """Return an absolute path to a file inside the project's data/ directory."""
+    return os.path.join(_PROJECT_ROOT, "data", filename)
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +50,7 @@ CITY_CONFIGS: Dict[str, Dict[str, Any]] = {
         "state_fips":       "06",
         "county_fips":      "075",
         "census_year":      2022,
-        "gtfs_path":        "data/muni_gtfs-current.zip",   # place GTFS zip here
+        "gtfs_path":        _data("muni_gtfs-current.zip"),   # place GTFS zip here
         "gtfs_url":         None,
         "travel_speeds": {
             "walk":    4.8,
@@ -66,7 +75,8 @@ CITY_CONFIGS: Dict[str, Dict[str, Any]] = {
         "park_threshold":     0.90,
         "airport_locations":  [(37.6213, -122.3790)],  # SFO
         "use_local_polygon":  True,
-        "local_polygon_path": "data/sf_polygon.geojson",
+        "local_polygon_path": _data("sf_polygon.geojson"),
+        "neighborhoods_file": _data("sf_neighborhoods.geojson"),
     },
 
     "New York City, New York, USA": {
@@ -75,7 +85,7 @@ CITY_CONFIGS: Dict[str, Dict[str, Any]] = {
         "state_fips":       "36",
         "county_fips":      "061",   # Manhattan; override if you want all 5 boroughs
         "census_year":      2022,
-        "gtfs_path":        "data/nyc_gtfs.zip",
+        "gtfs_path":        _data("nyc_gtfs.zip"),
         "gtfs_url":         None,
         "travel_speeds": {
             "walk":    4.8,
@@ -109,7 +119,7 @@ CITY_CONFIGS: Dict[str, Dict[str, Any]] = {
         "state_fips":       "17",
         "county_fips":      "031",
         "census_year":      2022,
-        "gtfs_path":        "data/chicago_gtfs.zip",
+        "gtfs_path":        _data("chicago_gtfs.zip"),
         "gtfs_url":         None,
         "travel_speeds": {
             "walk":    4.8,

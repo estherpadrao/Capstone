@@ -12,6 +12,7 @@ import geopandas as gpd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from scipy import stats
 import folium
 from branca.colormap import LinearColormap
@@ -158,10 +159,37 @@ def plot_scatter(grid: HexGrid, city_name: str = "") -> str:
     ax.plot([0, 100], [0, 100], "k--", lw=1, alpha=0.3, label="PCI = BCI")
     ax.axvline(pci_med, color="blue",  ls=":", alpha=0.5, label=f"PCI median ({pci_med:.1f})")
     ax.axhline(bci_med, color="green", ls=":", alpha=0.5, label=f"BCI median ({bci_med:.1f})")
+
+    # Quadrant background shading
+    ax.fill_between([0, pci_med],    bci_med, 100, color="tomato",    alpha=0.06)
+    ax.fill_between([pci_med, 100],  bci_med, 100, color="green",     alpha=0.06)
+    ax.fill_between([0, pci_med],    0, bci_med,   color="lightgray", alpha=0.15)
+    ax.fill_between([pci_med, 100],  0, bci_med,   color="steelblue", alpha=0.06)
+
+    # Quadrant text labels
+    for x, y, txt, col in [
+        (pci_med * 0.5,          (100 + bci_med) * 0.5, "Low PCI\nHigh BCI",  "tomato"),
+        ((100 + pci_med) * 0.5,  (100 + bci_med) * 0.5, "High PCI\nHigh BCI", "green"),
+        (pci_med * 0.5,          bci_med * 0.5,          "Low PCI\nLow BCI",   "gray"),
+        ((100 + pci_med) * 0.5,  bci_med * 0.5,          "High PCI\nLow BCI",  "steelblue"),
+    ]:
+        ax.text(x, y, txt, ha="center", va="center", fontsize=8.5, color=col,
+                alpha=0.75, fontweight="bold",
+                bbox=dict(facecolor="white", alpha=0.45, edgecolor="none", pad=2))
+
     ax.set_xlabel("PCI", fontsize=12)
     ax.set_ylabel("BCI", fontsize=12)
     ax.set_title(f"PCI vs BCI Scatter  (r = {pearson_r:.3f})", fontsize=13)
-    ax.legend(fontsize=9)
+
+    quad_patches = [
+        mpatches.Patch(color="green",     alpha=0.6, label="High PCI & High BCI"),
+        mpatches.Patch(color="steelblue", alpha=0.6, label="High PCI, Low BCI"),
+        mpatches.Patch(color="tomato",    alpha=0.6, label="Low PCI, High BCI"),
+        mpatches.Patch(color="lightgray", alpha=0.8, label="Low PCI & Low BCI"),
+    ]
+    existing_h, existing_l = ax.get_legend_handles_labels()
+    ax.legend(handles=existing_h + quad_patches, fontsize=8.5, loc="upper left",
+              title="Quadrants (median split)", title_fontsize=8)
     ax.grid(True, alpha=0.3)
 
     # --- Hexbin density ---
@@ -256,7 +284,7 @@ def plot_spatial_comparison(grid: HexGrid, city_name: str = "") -> str:
     axes[0, 1].set_title("Business Connectivity Index (BCI)", fontweight="bold")
     axes[0, 1].axis("off")
 
-    grid.gdf.plot(column="pci_bci_diff", cmap="RdBu_r", ax=axes[1, 0], legend=True,
+    grid.gdf.plot(column="pci_bci_diff", cmap="RdBu", ax=axes[1, 0], legend=True,
                   edgecolor="gray", linewidth=0.1,
                   legend_kwds={"label": "PCI − BCI", "shrink": 0.8})
     axes[1, 0].set_title("Difference Map (PCI − BCI)\nBlue = Residential | Red = Business",
@@ -264,19 +292,44 @@ def plot_spatial_comparison(grid: HexGrid, city_name: str = "") -> str:
     axes[1, 0].axis("off")
 
     quad_colors = {
-        "High PCI & High BCI": "green",
-        "High PCI, Low BCI":   "steelblue",
-        "Low PCI, High BCI":   "tomato",
-        "Low PCI & Low BCI":   "lightgray",
-    }
+    "High PCI & High BCI": "green",
+    "High PCI, Low BCI":   "steelblue",
+    "Low PCI, High BCI":   "tomato",
+    "Low PCI & Low BCI":   "lightgray",
+}
+
     for quad, color in quad_colors.items():
         sub = quad_gdf[quad_gdf["quadrant"] == quad]
         if len(sub):
-            sub.plot(ax=axes[1, 1], color=color, edgecolor="black",
-                     linewidth=0.1, label=quad, alpha=0.8)
+            sub.plot(ax=axes[1, 1],
+                    color=color,
+                    edgecolor="black",
+                    linewidth=0.1,
+                    alpha=0.8)
+
     axes[1, 1].set_title("Quadrant Analysis", fontweight="bold")
-    axes[1, 1].legend(loc="upper left", fontsize=8)
     axes[1, 1].axis("off")
+    axes[1, 1].set_frame_on(False)
+
+    from matplotlib.patches import Patch
+
+    legend_elements = [
+        Patch(facecolor="green", edgecolor="black",
+            label="High PCI & High BCI"),
+        Patch(facecolor="steelblue", edgecolor="black",
+            label="High PCI, Low BCI"),
+        Patch(facecolor="tomato", edgecolor="black",
+            label="Low PCI, High BCI"),
+        Patch(facecolor="lightgray", edgecolor="black",
+            label="Low PCI & Low BCI"),
+    ]
+
+    axes[1, 1].legend(
+        handles=legend_elements,
+        loc="upper left",
+        fontsize=9,
+        title="Quadrants"
+    )
 
     plt.suptitle(f"{city_name} — Spatial PCI vs BCI", fontsize=14, y=1.01)
     plt.tight_layout()
@@ -302,19 +355,4 @@ def make_comparison_map(grid: HexGrid) -> folium.Map:
         folium.Choropleth(
             geo_data=gdf.to_json(),
             data=gdf,
-            columns=["hex_id", col],
-            key_on="feature.properties.hex_id",
-            fill_color=colors,
-            fill_opacity=0.7,
-            line_opacity=0.2,
-            legend_name=name,
-            name=name,
-            show=show,
-        ).add_to(m)
-
-    _add_choropleth("PCI",           "Blues",  "People Connectivity Index (PCI)", show=True)
-    _add_choropleth("BCI",           "Reds",   "Business Connectivity Index (BCI)", show=False)
-    _add_choropleth("pci_bci_diff",  "RdBu",   "Difference (PCI − BCI)", show=False)
-
-    folium.LayerControl(collapsed=False).add_to(m)
-    return m
+            colum

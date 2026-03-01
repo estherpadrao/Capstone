@@ -1,11 +1,12 @@
 """
-File 15: Isochrones & Network Diagnostics
-==========================================
-- Network validation (connectivity, edge weights, node reachability)
-- Mass topography print-out
-- Isochrone generation for top/bottom 10% hexes (PCI & BCI)
+File 15: Isochrone Analysis
+============================
+- Isochrone generation for top/bottom N hexes (PCI & BCI)
 - Amenity / population / business counts within isochrones
 - Summary comparison tables
+
+Network diagnostics (validate_network, print_mass_topography) have been
+moved to analysis/network_diagnostics.py.
 """
 
 import math
@@ -24,8 +25,6 @@ from shapely.geometry import Point, MultiPoint, Polygon
 from typing import Dict, List, Optional, Tuple
 
 from core.h3_helper import HexGrid
-from core.network_builder import MultiModalNetworkBuilder
-from core.mass_calculator import MassCalculator
 
 warnings.filterwarnings("ignore")
 
@@ -33,136 +32,15 @@ warnings.filterwarnings("ignore")
 # Isochrone configuration
 # ---------------------------------------------------------------------------
 
-ISO_THRESHOLDS  = [10, 20, 30]   # minutes
-ISO_MODE_CONFIG = {
+ISO_THRESHOLDS   = [15]           # minutes — 15-min city benchmark
+ISO_MODE_CONFIG  = {
     "walk":    {"speed_kmh": 4.8,  "color": "#2ecc71", "osm_type": "walk"},
     "bike":    {"speed_kmh": 15.0, "color": "#3498db", "osm_type": "bike"},
     "drive":   {"speed_kmh": 24.0, "color": "#e74c3c", "osm_type": "drive"},
     "transit": {"speed_kmh": 13.0, "color": "#9b59b6", "osm_type": "walk"},
 }
-ISO_OPACITY = {10: 0.50, 20: 0.35, 30: 0.20}
-
-
-# ===========================================================================
-# PART 1: Network diagnostics
-# ===========================================================================
-
-def validate_network(
-    network_builder: MultiModalNetworkBuilder,
-    grid: HexGrid,
-    verbose: bool = True,
-) -> Dict:
-    """
-    Comprehensive network diagnostics:
-      - node/edge counts per mode
-      - weak connectivity + component sizes
-      - edge weight distribution
-      - hex-to-node reachability check
-    Returns a dict of stats (also prints if verbose=True).
-    """
-    results = {}
-    G_unified = network_builder.unified_graph
-
-    if G_unified is None:
-        return {"error": "Networks not built yet."}
-
-    # --- Per-mode stats ---
-    mode_stats = {}
-    for mode, G in network_builder.networks.items():
-        comps   = list(nx.weakly_connected_components(G))
-        n_comps = len(comps)
-        largest = max(len(c) for c in comps) if comps else 0
-        mode_stats[mode] = {
-            "nodes":     G.number_of_nodes(),
-            "edges":     G.number_of_edges(),
-            "connected": nx.is_weakly_connected(G),
-            "n_components": n_comps,
-            "largest_component": largest,
-        }
-
-    # --- Unified graph ---
-    u_comps  = list(nx.weakly_connected_components(G_unified))
-    time_vals = [d["time_min"] for _, _, d in G_unified.edges(data=True) if "time_min" in d]
-    mode_counts: Dict[str, int] = {}
-    for _, _, d in G_unified.edges(data=True):
-        m = d.get("mode", "unknown")
-        mode_counts[m] = mode_counts.get(m, 0) + 1
-
-    unified_stats = {
-        "nodes":       G_unified.number_of_nodes(),
-        "edges":       G_unified.number_of_edges(),
-        "connected":   nx.is_weakly_connected(G_unified),
-        "n_components": len(u_comps),
-        "largest_component": max(len(c) for c in u_comps) if u_comps else 0,
-        "time_min_mean": float(np.mean(time_vals)) if time_vals else 0,
-        "time_min_max":  float(np.max(time_vals))  if time_vals else 0,
-        "edges_by_mode": mode_counts,
-    }
-
-    # --- Hex-to-node coverage ---
-    centroids = grid.centroids
-    hex_ids   = centroids["hex_id"].tolist()
-    coords    = [(r.geometry.y, r.geometry.x) for _, r in centroids.iterrows()]
-    nearest   = network_builder.get_nearest_nodes_batch(coords, mode="unified")
-    unique_near = len(set(nearest))
-    hex_coverage = {
-        "n_hexes":          len(hex_ids),
-        "n_unique_nodes":   unique_near,
-        "coverage_ratio":   round(unique_near / max(len(hex_ids), 1), 3),
-    }
-
-    results = {
-        "mode_stats":    mode_stats,
-        "unified":       unified_stats,
-        "hex_coverage":  hex_coverage,
-    }
-
-    if verbose:
-        print("\n" + "=" * 60)
-        print("🔍 NETWORK VALIDATION")
-        print("=" * 60)
-        for mode, s in mode_stats.items():
-            conn = "✅" if s["connected"] else f"⚠ {s['n_components']} components"
-            print(f"\n  {mode.upper()}: {s['nodes']:,} nodes | {s['edges']:,} edges | {conn}")
-            if not s["connected"]:
-                print(f"     Largest component: {s['largest_component']:,} nodes")
-
-        u = unified_stats
-        print(f"\n  UNIFIED: {u['nodes']:,} nodes | {u['edges']:,} edges")
-        print(f"   Connected: {'✅' if u['connected'] else '⚠'}")
-        print(f"   time_min: mean={u['time_min_mean']:.2f}, max={u['time_min_max']:.2f}")
-        print(f"   Edges by mode: {u['edges_by_mode']}")
-        hc = hex_coverage
-        print(f"\n  HEX→NODE: {hc['n_hexes']} hexes mapped to "
-              f"{hc['n_unique_nodes']} unique nodes "
-              f"(ratio {hc['coverage_ratio']:.2f})")
-        print("=" * 60)
-
-    return results
-
-
-def print_mass_topography(
-    grid: HexGrid,
-    mass_calc: MassCalculator,
-    city_name: str = "",
-):
-    """Print a text summary of the topographic mass surface."""
-    print("\n" + "=" * 60)
-    print(f"🏔  MASS TOPOGRAPHY — {city_name}")
-    print("=" * 60)
-
-    df = mass_calc.summary()
-    print(df.to_string(index=False))
-
-    if mass_calc._composite is not None:
-        c = mass_calc._composite
-        print(f"\n  Composite mass: min={c.min():.4f}, max={c.max():.4f}, "
-              f"mean={c.mean():.4f}, std={c.std():.4f}")
-        peaks   = mass_calc.identify_peaks(90)
-        valleys = mass_calc.identify_valleys(10)
-        print(f"  Peaks (top 10%):   {len(peaks)} hexes")
-        print(f"  Valleys (bot 10%): {len(valleys)} hexes")
-    print("=" * 60)
+ISO_MODES_ACTIVE = ["transit"]    # modes used in analysis and rendering
+ISO_OPACITY      = {15: 0.50}
 
 
 # ===========================================================================
@@ -260,10 +138,14 @@ class IsochroneCounter:
         poly_gdf = gpd.GeoDataFrame(geometry=[poly], crs="EPSG:4326")
         cols = [c for c in ["hex_id", "geometry", "population", "supplier_mass", "median_income"]
                 if c in self.grid.columns]
+        missing = [c for c in ["population", "supplier_mass"] if c not in self.grid.columns]
+        if missing:
+            print(f"   ⚠ count_demand: grid missing columns {missing} — attach them before running isochrones")
         try:
             hexes = gpd.sjoin(self.grid[cols].dropna(subset=["geometry"]),
                               poly_gdf, how="inner", predicate="intersects")
-        except Exception:
+        except Exception as e:
+            print(f"   ⚠ count_demand sjoin error: {e}")
             return {"population": 0, "businesses": 0, "market_demand_B": 0}
 
         pop = float(hexes["population"].sum())      if "population"    in hexes.columns else 0
@@ -283,34 +165,32 @@ def run_isochrone_analysis(
     grid: HexGrid,
     city_name: str,
     amenities: Optional[dict] = None,
-    top_pct: float = 0.90,
-    bottom_pct: float = 0.10,
     max_origins: int = 5,
 ) -> Dict:
     """
     Full isochrone workflow for PCI and BCI.
+    Origins: top-N and bottom-N hexes by score (N = max_origins).
     Returns a dict with:
       - iso_gdf         : GeoDataFrame of all isochrone polygons
-      - pci_counts_df   : amenity counts per isochrone
-      - bci_counts_df   : demand counts per isochrone
-      - pci_summary     : pivot table
-      - bci_pop_summary : pivot table
-      - bci_biz_summary : pivot table
+      - pci_counts_df   : per-origin amenity counts
+      - bci_counts_df   : per-origin demand counts
+      - pci_per_origin  : per-origin table (labeled top1, top2 ...)
+      - bci_per_origin  : per-origin table (labeled top1, top2 ...)
+      - pci_summary     : mean top vs bottom comparison with ratio
+      - bci_pop_summary : mean top vs bottom comparison with ratio
+      - bci_biz_summary : mean top vs bottom comparison with ratio
+      - origins         : {index_col: {"top": gdf, "bottom": gdf}}
     """
     builder = IsochroneBuilder(city_name)
     counter = IsochroneCounter(amenities or {}, grid.gdf)
 
     def _get_origins(col: str):
+        """Take the top-N highest and top-N lowest hexes by score."""
         valid = grid.gdf[grid.gdf[col].notna()].copy()
-        top_t = valid[col].quantile(top_pct)
-        bot_t = valid[col].quantile(bottom_pct)
-        top_h = valid[valid[col] >= top_t].sort_values(col, ascending=False)
-        bot_h = valid[valid[col] <= bot_t].sort_values(col, ascending=True)
-        if max_origins:
-            step_t = max(1, len(top_h) // max_origins)
-            step_b = max(1, len(bot_h) // max_origins)
-            top_h = top_h.iloc[::step_t][:max_origins]
-            bot_h = bot_h.iloc[::step_b][:max_origins]
+        top_h = valid.sort_values(col, ascending=False).head(max_origins).copy()
+        bot_h = valid.sort_values(col, ascending=True).head(max_origins).copy()
+        top_h["origin_label"] = [f"top{i+1}"    for i in range(len(top_h))]
+        bot_h["origin_label"] = [f"bottom{i+1}" for i in range(len(bot_h))]
         print(f"   {col}: {len(top_h)} top / {len(bot_h)} bottom origins")
         return {"top": top_h, "bottom": bot_h}
 
@@ -320,30 +200,39 @@ def run_isochrone_analysis(
         for _, row in o4326.iterrows():
             c   = row.geometry.centroid
             lat, lng = c.y, c.x
-            for mode in ISO_MODE_CONFIG:
+            for mode in ISO_MODES_ACTIVE:
                 for thr in ISO_THRESHOLDS:
-                    print(f"      {index_col} {group} hex {row['hex_id']} | {mode} {thr}min...", end=" ")
+                    label = row.get("origin_label", group)
+                    print(f"      {index_col} {label} hex {row['hex_id']} | {mode} {thr}min...", end=" ")
                     poly = builder.build(lat, lng, mode, thr)
                     print("✓")
                     rows.append({
-                        "hex_id": row["hex_id"], "group": group, "index": index_col,
-                        "mode": mode, "threshold": thr,
-                        "score": row[index_col], "lat": lat, "lng": lng,
-                        "geometry": poly,
+                        "hex_id":       row["hex_id"],
+                        "origin_label": label,
+                        "group":        group,
+                        "index":        index_col,
+                        "mode":         mode,
+                        "threshold":    thr,
+                        "score":        row[index_col],
+                        "lat": lat, "lng": lng,
+                        "geometry":     poly,
                     })
         return rows
 
-    all_rows = []
+    all_rows        = []
     pci_counts_list = []
     bci_counts_list = []
+    origins_by_index: Dict[str, dict] = {}
 
     for index_col in [c for c in ["PCI", "BCI"] if c in grid.gdf.columns]:
         origins = _get_origins(index_col)
+        origins_by_index[index_col] = origins
         for group, gdf in origins.items():
             rows = _build_for_group(gdf, group, index_col)
             all_rows.extend(rows)
             for r in rows:
-                base = {k: r[k] for k in ["hex_id", "group", "mode", "threshold", "score"]}
+                base = {k: r[k] for k in
+                        ["hex_id", "origin_label", "group", "mode", "threshold", "score"]}
                 if index_col == "PCI":
                     pci_counts_list.append({**base, **counter.count_amenities(r["geometry"])})
                 else:
@@ -353,32 +242,76 @@ def run_isochrone_analysis(
     pci_df  = pd.DataFrame(pci_counts_list)
     bci_df  = pd.DataFrame(bci_counts_list)
 
-    # Summary pivots
-    def _pivot(df, val_cols):
+    _DISPLAY = {
+        "health":          "Health",
+        "education":       "Education",
+        "parks":           "Parks",
+        "community":       "Community",
+        "food_retail":     "Food & Retail",
+        "transit":         "Transit Stops",
+        "total_amenities": "Total Amenities",
+        "population":      "Population",
+        "market_demand_B": "Market Demand ($B)",
+        "businesses":      "Businesses",
+    }
+
+    # Per-origin table: label → score → amenity/demand counts
+    def _per_origin_table(df, val_cols, index_col=""):
         if df.empty:
             return pd.DataFrame()
-        available = [c for c in val_cols if c in df.columns]
-        if not available:
+        avail = [c for c in val_cols if c in df.columns]
+        if not avail:
             return pd.DataFrame()
-        pvt = df.groupby(["group", "mode", "threshold"])[available].mean().round(1)
-        for col in available:
-            top    = pvt.xs("top",    level="group", drop_level=False)[col]
-            bottom = pvt.xs("bottom", level="group", drop_level=False)[col]
-            # Attach ratio
-        return pvt
+        keep   = ["origin_label", "score"] + avail
+        result = df[[c for c in keep if c in df.columns]].round(1)
+        rename = {
+            "origin_label": "Origin",
+            "score":        f"{index_col} Score" if index_col else "Score",
+            **{k: v for k, v in _DISPLAY.items() if k in result.columns},
+        }
+        return result.rename(columns=rename)
 
-    pci_summary = _pivot(pci_df, ["health", "education", "parks", "community",
-                                   "food_retail", "transit", "total_amenities"])
-    bci_pop_summary = _pivot(bci_df, ["population", "market_demand_B"])
-    bci_biz_summary = _pivot(bci_df, ["businesses"])
+    # Comparison summary: amenity/metric | Bottom-N avg | Top-N avg | ratio
+    def _comparison_summary(df, val_cols, n=max_origins):
+        if df.empty:
+            return pd.DataFrame()
+        avail = [c for c in val_cols if c in df.columns]
+        if not avail:
+            return pd.DataFrame()
+        grp = df.groupby("group")[avail].mean().round(1)
+        if "top" not in grp.index or "bottom" not in grp.index:
+            return grp.reset_index()
+        rows = []
+        for col in avail:
+            top_v = grp.loc["top",    col]
+            bot_v = grp.loc["bottom", col]
+            ratio = round(top_v / bot_v, 2) if bot_v != 0 else float("inf")
+            rows.append({
+                "Amenity / Metric": _DISPLAY.get(col, col),
+                f"Bottom-{n} avg":  bot_v,
+                f"Top-{n} avg":     top_v,
+                "Top÷Bottom":       ratio,
+            })
+        return pd.DataFrame(rows)
+
+    pci_amenity_cols = ["health", "education", "parks", "community",
+                        "food_retail", "transit", "total_amenities"]
+    pci_per_origin  = _per_origin_table(pci_df, pci_amenity_cols, index_col="PCI")
+    bci_per_origin  = _per_origin_table(bci_df, ["population", "market_demand_B"], index_col="BCI")
+    pci_summary     = _comparison_summary(pci_df, pci_amenity_cols)
+    bci_pop_summary = _comparison_summary(bci_df, ["population", "market_demand_B"])
+    bci_biz_summary = _comparison_summary(bci_df, ["businesses"])
 
     return {
         "iso_gdf":         iso_gdf,
         "pci_counts_df":   pci_df,
         "bci_counts_df":   bci_df,
+        "pci_per_origin":  pci_per_origin,
+        "bci_per_origin":  bci_per_origin,
         "pci_summary":     pci_summary,
         "bci_pop_summary": bci_pop_summary,
         "bci_biz_summary": bci_biz_summary,
+        "origins":         origins_by_index,
     }
 
 
@@ -396,7 +329,6 @@ def make_pci_isochrone_map(
     """Interactive folium map for PCI isochrones."""
     from branca.colormap import LinearColormap
 
-    center = tuple(grid.gdf.total_bounds[[1, 3]].mean()), tuple(grid.gdf.total_bounds[[0, 2]].mean())
     center = ((grid.gdf.total_bounds[1] + grid.gdf.total_bounds[3]) / 2,
               (grid.gdf.total_bounds[0] + grid.gdf.total_bounds[2]) / 2)
     m = folium.Map(location=center, zoom_start=12, tiles="cartodbpositron")
@@ -421,19 +353,23 @@ def make_pci_isochrone_map(
     cmap.add_to(m)
 
     # Isochrones
-    pci_iso = iso_gdf[iso_gdf.get("index", iso_gdf.columns[0]) == "PCI"] if len(iso_gdf) else iso_gdf
-    _add_isochrone_layers(m, pci_iso, pci_counts_df, "PCI")
+    pci_iso    = iso_gdf[iso_gdf.get("index", iso_gdf.columns[0]) == "PCI"] if len(iso_gdf) else iso_gdf
+    n_pci      = int(pci_iso[pci_iso["group"] == "top"]["hex_id"].nunique()) if len(pci_iso) > 0 else 5
+    _add_isochrone_layers(m, pci_iso, pci_counts_df, "PCI", n_origins=n_pci)
 
     # Origin markers
     for group_label, color in [("top", "#f39c12"), ("bottom", "#c0392b")]:
         if group_label not in pci_origins:
             continue
-        fg = folium.FeatureGroup(name=f"📍 {'Top' if group_label=='top' else 'Bottom'} 10% Origins (PCI)")
+        n_grp      = len(pci_origins[group_label])
+        group_text = f"Top {n_grp}" if group_label == "top" else f"Bottom {n_grp}"
+        fg = folium.FeatureGroup(name=f"📍 {group_text} Origins (PCI)")
         for _, row in pci_origins[group_label].to_crs("EPSG:4326").iterrows():
+            lbl = row.get("origin_label", group_label)
             c = row.geometry.centroid
             folium.CircleMarker([c.y, c.x], radius=8, color="#2c3e50",
                                 fill=True, fill_color=color, fill_opacity=1.0,
-                                tooltip=f"PCI={row.get('PCI', ''):.1f} ({group_label})").add_to(fg)
+                                tooltip=f"{lbl} | PCI={row.get('PCI', ''):.1f}").add_to(fg)
         fg.add_to(m)
 
     _add_isochrone_legend(m, "PCI")
@@ -474,17 +410,21 @@ def make_bci_isochrone_map(
     cmap.add_to(m)
 
     bci_iso = iso_gdf[iso_gdf.get("index", iso_gdf.columns[0]) == "BCI"] if len(iso_gdf) else iso_gdf
-    _add_isochrone_layers(m, bci_iso, bci_counts_df, "BCI")
+    n_bci   = int(bci_iso[bci_iso["group"] == "top"]["hex_id"].nunique()) if len(bci_iso) > 0 else 5
+    _add_isochrone_layers(m, bci_iso, bci_counts_df, "BCI", n_origins=n_bci)
 
     for group_label, color in [("top", "#27ae60"), ("bottom", "#8e44ad")]:
         if group_label not in bci_origins:
             continue
-        fg = folium.FeatureGroup(name=f"📍 {'Top' if group_label=='top' else 'Bottom'} 10% Origins (BCI)")
+        n_grp      = len(bci_origins[group_label])
+        group_text = f"Top {n_grp}" if group_label == "top" else f"Bottom {n_grp}"
+        fg = folium.FeatureGroup(name=f"📍 {group_text} Origins (BCI)")
         for _, row in bci_origins[group_label].to_crs("EPSG:4326").iterrows():
+            lbl = row.get("origin_label", group_label)
             c = row.geometry.centroid
             folium.CircleMarker([c.y, c.x], radius=8, color="#2c3e50",
                                 fill=True, fill_color=color, fill_opacity=1.0,
-                                tooltip=f"BCI={row.get('BCI', ''):.2f} ({group_label})").add_to(fg)
+                                tooltip=f"{lbl} | BCI={row.get('BCI', ''):.2f}").add_to(fg)
         fg.add_to(m)
 
     _add_isochrone_legend(m, "BCI")
@@ -492,15 +432,16 @@ def make_bci_isochrone_map(
     return m
 
 
-def _add_isochrone_layers(m, iso_gdf, counts_df, index_col):
+def _add_isochrone_layers(m, iso_gdf, counts_df, index_col, n_origins: int = 5):
     if iso_gdf is None or len(iso_gdf) == 0:
         return
     counts_idx = counts_df.set_index(["hex_id", "threshold"]) if not counts_df.empty else pd.DataFrame()
 
     for group in ["top", "bottom"]:
-        for mode, mconf in ISO_MODE_CONFIG.items():
-            name = f"{'🟢 Top' if group=='top' else '🔴 Bottom'} 10% | {mode.title()}"
-            show = (group == "top" and mode == "walk")
+        for mode in ISO_MODES_ACTIVE:
+            mconf = ISO_MODE_CONFIG[mode]
+            name = f"{'🟢 Top' if group=='top' else '🔴 Bottom'} {n_origins} | {mode.title()}"
+            show = (group == "top")   # show top layer by default
             fg   = folium.FeatureGroup(name=name, show=show)
 
             sub = iso_gdf[(iso_gdf["group"] == group) & (iso_gdf["mode"] == mode)]
@@ -546,11 +487,7 @@ def _add_isochrone_legend(m, index_col):
     <div style="position:fixed;bottom:30px;left:30px;z-index:9999;background:white;
                 padding:12px 16px;border-radius:8px;box-shadow:2px 2px 6px rgba(0,0,0,.3);
                 font-size:13px;line-height:1.8;">
-    <b>{index_col} Isochrones</b><br>
-    <span style="color:#2ecc71">■</span> Walk &nbsp;
-    <span style="color:#3498db">■</span> Bike &nbsp;
-    <span style="color:#e74c3c">■</span> Drive &nbsp;
-    <span style="color:#9b59b6">■</span> Transit<br>
-    <b>Opacity:</b> dark=10 min · mid=20 min · light=30 min
+    <b>{index_col} Isochrones — 15 min</b><br>
+    <span style="color:#9b59b6">■</span> Transit
     </div>"""
     m.get_root().html.add_child(folium.Element(html))

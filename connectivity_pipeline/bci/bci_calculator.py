@@ -18,11 +18,12 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import networkx as nx
+from scipy.spatial import cKDTree
 from typing import Dict, List, Optional, Tuple
 
 from core.h3_helper import HexGrid
 from core.network_builder import MultiModalNetworkBuilder
-from bci.bci_masses import MarketMassCalculator, LabourMassCalculator, SupplierMassCalculator
+from bci.bci_masses import BCIMassCalculator, MarketMassCalculator, LabourMassCalculator, SupplierMassCalculator
 
 
 # ---------------------------------------------------------------------------
@@ -64,26 +65,31 @@ class BCIHansenAccessibility:
         beta_params: Optional[Dict[str, float]] = None,
         network_config: Optional[Dict[str, List[str]]] = None,
     ):
-        self.grid   = grid
-        self.net    = network_builder
+        self.grid    = grid
+        self.net     = network_builder
         self.hex_ids = grid.gdf["hex_id"].tolist()
-        self.beta   = {**DEFAULT_BETA_PARAMS, **(beta_params or {})}
+        self.beta    = {**DEFAULT_BETA_PARAMS, **(beta_params or {})}
         self.net_config = {**DEFAULT_NETWORK_CONFIG, **(network_config or {})}
 
         # Computed attributes
         self._component_graphs: Dict[str, nx.MultiDiGraph] = {}
+        # Per-component spatial indices (built in build_component_graphs)
+        self._kdtrees:   Dict[str, cKDTree] = {}
+        self._node_ids:  Dict[str, list]    = {}
         self._hex_to_node: Dict[str, Dict[str, int]] = {}   # component → {hex_id: node}
-        self._travel_times: Dict[str, Dict[str, Dict[str, float]]] = {}  # comp → origin → {dest: min}
+        self._travel_times: Dict[str, Dict[str, Dict[str, float]]] = {}
         self.accessibility: Dict[str, pd.Series] = {}
 
     # ------------------------------------------------------------------
-    # Step 1 — Build component sub-graphs
+    # Step 1 — Build component sub-graphs + per-component KD-trees
     # ------------------------------------------------------------------
 
     def build_component_graphs(self):
         """
-        Merge the required modal networks for each component into
-        a single graph per component.
+        Merge the required modal networks for each component into a single
+        graph, then build a component-specific spatial KD-tree so that hexes
+        are mapped to the nearest node **within that component's graph**
+        (matches notebook BCINetworkBuilder._build_component_networks exactly).
         """
         for component, modes in self.net_config.items():
             G = nx.MultiDiGraph()
@@ -100,36 +106,59 @@ class BCIHansenAccessibility:
                     else:
                         G.nodes[node].update(ndata)
             self._component_graphs[component] = G
+
+            # Build a KD-tree over THIS component graph's nodes
+            nodes    = list(G.nodes(data=True))
+            node_ids = [n[0] for n in nodes]
+            coords   = np.array([(d.get("y", 0), d.get("x", 0)) for _, d in nodes])
+            self._node_ids[component]  = node_ids
+            self._kdtrees[component]   = cKDTree(coords) if len(coords) else None
+
             print(f"   ✓ {component} graph: {G.number_of_nodes():,} nodes "
                   f"({', '.join(modes)})")
 
     # ------------------------------------------------------------------
-    # Step 2 — Map hexes to nodes for each component
+    # Step 2 — Map hexes to nodes using component-specific KD-tree
     # ------------------------------------------------------------------
 
     def _map_hexes_to_nodes(self, component: str):
+        """
+        Map each hex centroid to its nearest node in the component graph.
+        Uses a component-specific spatial index, matching notebook
+        BCIHansenAccessibility._compute_travel_times_for_component().
+        """
         if component in self._hex_to_node:
             return
 
-        G    = self._component_graphs.get(component)
-        if G is None or G.number_of_nodes() == 0:
+        kdt      = self._kdtrees.get(component)
+        node_ids = self._node_ids.get(component)
+        if kdt is None or not node_ids:
             self._hex_to_node[component] = {}
             return
 
-        # Find best available mode for KD-tree
-        primary_mode = self.net_config[component][0]
         centroids  = self.grid.centroids
         hex_ids    = centroids["hex_id"].tolist()
-        coords     = [(r.geometry.y, r.geometry.x) for _, r in centroids.iterrows()]
-        nearest    = self.net.get_nearest_nodes_batch(coords, mode=primary_mode)
+        hex_coords = np.array(
+            [(r.geometry.y, r.geometry.x) for _, r in centroids.iterrows()]
+        )
+        _, idxs  = kdt.query(hex_coords)
+        nearest  = [node_ids[i] for i in idxs]
         self._hex_to_node[component] = dict(zip(hex_ids, nearest))
+        print(f"      ✓ Mapped {len(hex_ids)} hexes to {component} network nodes")
 
     # ------------------------------------------------------------------
     # Step 3 — Compute travel times for one component
     # ------------------------------------------------------------------
 
-    def compute_travel_times_for(self, component: str, max_time: float = 90.0):
-        """Compute all-pairs travel times for one BCI component."""
+    def compute_travel_times_for(self, component: str, max_time: float = 120.0):
+        """
+        Compute shortest-path travel times for one BCI component.
+
+        Matches notebook BCIHansenAccessibility._compute_travel_times_for_component:
+        - Iterates each unique source node
+        - Runs single-source Dijkstra with cutoff
+        - Maps node distances directly to hex distances via hex_to_node mapping
+        """
         print(f"   ⏱  {component} travel times (max {max_time} min)...")
         self._map_hexes_to_nodes(component)
         hex_to_node = self._hex_to_node.get(component, {})
@@ -139,28 +168,26 @@ class BCIHansenAccessibility:
             self._travel_times[component] = {}
             return
 
-        node_to_hexes: Dict[int, list] = {}
-        for hx, nd in hex_to_node.items():
-            node_to_hexes.setdefault(nd, []).append(hx)
-
         unique_nodes = list(set(hex_to_node.values()))
-        travel_times: Dict[str, Dict[str, float]] = {hx: {} for hx in self.hex_ids}
+        travel_times: Dict[str, Dict[str, float]] = {}
 
-        for i, src_node in enumerate(unique_nodes):
+        for i, source_node in enumerate(unique_nodes):
             if i % 100 == 0:
                 print(f"      {i + 1}/{len(unique_nodes)}...", end="\r")
             try:
                 lengths = nx.single_source_dijkstra_path_length(
-                    G, src_node, cutoff=max_time, weight="time_min"
+                    G, source_node, cutoff=max_time, weight="time_min"
                 )
             except Exception:
                 continue
-            for dest_node, dist in lengths.items():
-                for dest_hex in node_to_hexes.get(dest_node, []):
-                    for src_hex in node_to_hexes.get(src_node, []):
-                        prev = travel_times[src_hex].get(dest_hex, float("inf"))
-                        if dist < prev:
-                            travel_times[src_hex][dest_hex] = dist
+
+            # All hexes mapped to this source node share the same origin distances
+            source_hexes = [h for h, n in hex_to_node.items() if n == source_node]
+            for src_hex in source_hexes:
+                travel_times[src_hex] = {}
+                for dest_hex, dest_node in hex_to_node.items():
+                    if dest_node in lengths:
+                        travel_times[src_hex][dest_hex] = lengths[dest_node]
 
         self._travel_times[component] = travel_times
         n = sum(len(v) for v in travel_times.values())
@@ -251,15 +278,23 @@ class BCICalculator:
         self,
         grid: HexGrid,
         hansen_model: BCIHansenAccessibility,
-        market_calc:   MarketMassCalculator,
-        labour_calc:   LabourMassCalculator,
-        supplier_calc: SupplierMassCalculator,
+        market_calc,          # BCIMassCalculator | MarketMassCalculator
+        labour_calc=None,     # LabourMassCalculator (optional when unified calc used)
+        supplier_calc=None,   # SupplierMassCalculator (optional when unified calc used)
     ):
         self.grid   = grid
         self.hansen = hansen_model
-        self.market   = market_calc
-        self.labour   = labour_calc
-        self.supplier = supplier_calc
+        # Accept either the unified BCIMassCalculator or the three separate shims
+        if isinstance(market_calc, BCIMassCalculator):
+            self._mass_calc = market_calc
+            self.market   = market_calc
+            self.labour   = market_calc
+            self.supplier = market_calc
+        else:
+            self._mass_calc = None
+            self.market   = market_calc
+            self.labour   = labour_calc
+            self.supplier = supplier_calc
         self.hex_ids  = grid.gdf["hex_id"].tolist()
         self._bci: Optional[pd.Series] = None
         self.components: Dict[str, pd.Series] = {}
@@ -305,9 +340,14 @@ class BCICalculator:
         else:
             raise ValueError(f"Unknown BCI method: {method}. Use 'weight_free' or 'weighted'.")
 
-        # Urban interface bonus
-        if use_interface and self.supplier.urban_interface is not None:
-            ui = self.supplier.urban_interface.reindex(self.hex_ids).fillna(0)
+        # Urban interface bonus — works with both unified and shim calculators
+        _ui = (
+            self._mass_calc._urban_interface
+            if self._mass_calc is not None
+            else getattr(self.supplier, "urban_interface", None)
+        )
+        if use_interface and _ui is not None:
+            ui = _ui.reindex(self.hex_ids).fillna(0)
             bci_raw = bci_raw * (1 + interface_lambda * ui)
             self.components["urban_interface"] = ui
 
