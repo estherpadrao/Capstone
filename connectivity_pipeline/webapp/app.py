@@ -468,7 +468,7 @@ def pci_compute():
         grid.attach_data(mass, "mass")
 
         # Travel-time cache path (depends only on city/network, not on params)
-        safe_city     = city_name.replace(",", "").replace(" ", "_").replace("/", "_")
+        safe_city     = s.get("city_name", "unknown").replace(",", "").replace(" ", "_").replace("/", "_")
         tt_cache_path = os.path.join(CACHE_DIR, f"tt_pci_{safe_city}.pkl")
         avg_cost      = sum(city_cfg["travel_costs"].values()) / len(city_cfg["travel_costs"])
 
