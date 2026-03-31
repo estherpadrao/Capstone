@@ -313,65 +313,78 @@ def pci_build_network():
         grid        = s["grid"]
         fetcher     = s["fetcher"]
 
-        # Network
-        net = MultiModalNetworkBuilder(
-            fetcher.boundary_polygon,
-            gtfs_path=city_cfg.get("gtfs_path"),
-            travel_speeds=city_cfg["travel_speeds"],
-            travel_costs=city_cfg["travel_costs"],
-            time_penalties=city_cfg["time_penalties"],
-            median_hourly_wage=city_cfg["median_hourly_wage"],
-        )
-        net.build_all_networks(cache_dir=CACHE_DIR)
-        s["network"] = net
-
-        # Census income
-        census = CensusDataFetcher(
-            year=city_cfg["census_year"],
-            state_fips=city_cfg["state_fips"],
-            county_fips=city_cfg["county_fips"],
-            cache_dir=CACHE_DIR,
-        )
-        all_census = census.assign_all_to_hexes(grid)
-        s["income_by_hex"]     = all_census["median_income"]
-        s["population_by_hex"] = all_census["population"]
-        s["labour_by_hex"]     = all_census["labour"]
-        grid.attach_data(all_census["median_income"], "median_income")
-        grid.attach_data(all_census["population"],    "population")
-        s["census"] = census
-
-        # Neighbourhood polygons: prefer city-configured GeoJSON, fall back to census tracts
-        nb_file     = city_cfg.get("neighborhoods_file")
-        use_custom  = nb_file and os.path.isfile(nb_file)
-        nb_gdf      = None
-        try:
-            if use_custom:
-                nb_gdf = (gpd.read_file(nb_file)[["name", "geometry"]]
-                          .dropna(subset=["geometry", "name"])
-                          .reset_index(drop=True))
-                print(f"   🏘  Loaded {len(nb_gdf)} neighbourhoods from {os.path.basename(nb_file)}")
-            else:
-                tracts   = census.fetch_tiger_tracts()
-                name_col = "NAMELSAD" if "NAMELSAD" in tracts.columns else "NAME"
-                nb_gdf   = (tracts[[name_col, "geometry"]]
-                            .copy()
-                            .rename(columns={name_col: "name"})
-                            .dropna(subset=["geometry", "name"])
-                            .loc[lambda d: ~d["name"].astype(str).str.contains("9902", na=False)]
-                            .reset_index(drop=True))
-            s["neighborhoods_gdf"] = nb_gdf
-        except Exception as _nb_err:
-            print(f"   ⚠  Neighbourhood polygon extraction skipped: {_nb_err}")
-            s.setdefault("neighborhoods_gdf", None)
-
-        # Assign neighbourhood names to hexes (custom GeoJSON takes OSM-style override path)
-        try:
-            neighborhoods = census.assign_neighborhoods_to_hexes(
-                grid, osm_neighborhoods_gdf=nb_gdf if use_custom else None
+        # Network — build once per session, reuse on subsequent PCI runs
+        if "network" not in s:
+            net = MultiModalNetworkBuilder(
+                fetcher.boundary_polygon,
+                gtfs_path=city_cfg.get("gtfs_path"),
+                travel_speeds=city_cfg["travel_speeds"],
+                travel_costs=city_cfg["travel_costs"],
+                time_penalties=city_cfg["time_penalties"],
+                median_hourly_wage=city_cfg["median_hourly_wage"],
             )
-            grid.attach_data(neighborhoods, "neighborhood")
-        except Exception as _nb_err:
-            print(f"   ⚠  Neighborhood assignment skipped: {_nb_err}")
+            net.build_all_networks(cache_dir=CACHE_DIR)
+            s["network"] = net
+        else:
+            net = s["network"]
+            print("   ♻  Reusing network already in session")
+
+        # Census — fetch once per session
+        if "income_by_hex" not in s:
+            census = CensusDataFetcher(
+                year=city_cfg["census_year"],
+                state_fips=city_cfg["state_fips"],
+                county_fips=city_cfg["county_fips"],
+                cache_dir=CACHE_DIR,
+            )
+            all_census = census.assign_all_to_hexes(grid)
+            s["income_by_hex"]     = all_census["median_income"]
+            s["population_by_hex"] = all_census["population"]
+            s["labour_by_hex"]     = all_census["labour"]
+            grid.attach_data(all_census["median_income"], "median_income")
+            grid.attach_data(all_census["population"],    "population")
+            s["census"] = census
+        else:
+            census = s.get("census")
+            print("   ♻  Reusing census data already in session")
+
+        # Neighbourhood polygons — build once per session
+        if "neighborhoods_gdf" not in s:
+            nb_file     = city_cfg.get("neighborhoods_file")
+            use_custom  = nb_file and os.path.isfile(nb_file)
+            nb_gdf      = None
+            try:
+                if use_custom:
+                    nb_gdf = (gpd.read_file(nb_file)[["name", "geometry"]]
+                              .dropna(subset=["geometry", "name"])
+                              .reset_index(drop=True))
+                    print(f"   🏘  Loaded {len(nb_gdf)} neighbourhoods from {os.path.basename(nb_file)}")
+                else:
+                    tracts   = census.fetch_tiger_tracts()
+                    name_col = "NAMELSAD" if "NAMELSAD" in tracts.columns else "NAME"
+                    nb_gdf   = (tracts[[name_col, "geometry"]]
+                                .copy()
+                                .rename(columns={name_col: "name"})
+                                .dropna(subset=["geometry", "name"])
+                                .loc[lambda d: ~d["name"].astype(str).str.contains("9902", na=False)]
+                                .reset_index(drop=True))
+                s["neighborhoods_gdf"] = nb_gdf
+            except Exception as _nb_err:
+                print(f"   ⚠  Neighbourhood polygon extraction skipped: {_nb_err}")
+                s.setdefault("neighborhoods_gdf", None)
+
+        # Assign neighbourhood names to hexes — only if not already on the grid
+        if "neighborhood" not in grid.gdf.columns:
+            nb_gdf     = s.get("neighborhoods_gdf")
+            nb_file    = city_cfg.get("neighborhoods_file")
+            use_custom = nb_file and os.path.isfile(nb_file)
+            try:
+                neighborhoods = census.assign_neighborhoods_to_hexes(
+                    grid, osm_neighborhoods_gdf=nb_gdf if use_custom else None
+                )
+                grid.attach_data(neighborhoods, "neighborhood")
+            except Exception as _nb_err:
+                print(f"   ⚠  Neighborhood assignment skipped: {_nb_err}")
 
         diag = validate_network(net, grid, verbose=False)
         return jsonify({"status": "ok", "network_stats": diag["unified"]})
