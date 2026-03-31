@@ -253,6 +253,25 @@ def pci_init():
     user_params = {**get_default_user_params(), **(data.get("user_params") or {})}
 
     s = get_state(sid())
+
+    # If same city and session already has grid + amenities, just update params
+    # and recompute mass (fast) — skip all OSM fetching and grid building
+    if (s.get("city_name") == city_name
+            and "grid" in s
+            and "amenities" in s
+            and "mass_calc" in s):
+        s["user_params"] = user_params
+        grid      = s["grid"]
+        amenities = s["amenities"]
+        mass_calc = s["mass_calc"]
+        mass_calc.amenity_weights = user_params["amenity_weights"]
+        mass = mass_calc.compute_composite_mass()
+        grid.attach_data(mass, "mass")
+        for name, layer in mass_calc.layers.items():
+            grid.attach_data(layer.normalized_values, f"{name}_norm")
+        print("   ♻  Reusing grid & amenities already in session")
+        return jsonify({"status": "ok", "n_hexagons": len(grid)})
+
     try:
         city_cfg = get_city_config(city_name)
         s["city_name"] = city_name
@@ -266,6 +285,16 @@ def pci_init():
             local_path=city_cfg.get("local_polygon_path"),
         )
         grid = fetcher.build_grid(resolution=city_cfg["h3_resolution"])
+
+        # Preserve BCI columns from the previous grid (same city/resolution = same hex IDs).
+        # Safety net for when the session guard didn't fire (e.g. after server restart).
+        old_grid = s.get("grid")
+        if old_grid is not None:
+            for col in ["BCI", "A_market", "A_labour", "A_supplier",
+                        "market_mass", "labour_mass", "supplier_mass"]:
+                if col in old_grid.gdf.columns:
+                    grid.attach_data(old_grid.gdf.set_index("hex_id")[col], col)
+
         s["grid"]    = grid
         s["fetcher"] = fetcher
 
@@ -313,65 +342,90 @@ def pci_build_network():
         grid        = s["grid"]
         fetcher     = s["fetcher"]
 
-        # Network
-        net = MultiModalNetworkBuilder(
-            fetcher.boundary_polygon,
-            gtfs_path=city_cfg.get("gtfs_path"),
-            travel_speeds=city_cfg["travel_speeds"],
-            travel_costs=city_cfg["travel_costs"],
-            time_penalties=city_cfg["time_penalties"],
-            median_hourly_wage=city_cfg["median_hourly_wage"],
-        )
-        net.build_all_networks(cache_dir=CACHE_DIR)
-        s["network"] = net
-
-        # Census income
-        census = CensusDataFetcher(
-            year=city_cfg["census_year"],
-            state_fips=city_cfg["state_fips"],
-            county_fips=city_cfg["county_fips"],
-            cache_dir=CACHE_DIR,
-        )
-        all_census = census.assign_all_to_hexes(grid)
-        s["income_by_hex"]     = all_census["median_income"]
-        s["population_by_hex"] = all_census["population"]
-        s["labour_by_hex"]     = all_census["labour"]
-        grid.attach_data(all_census["median_income"], "median_income")
-        grid.attach_data(all_census["population"],    "population")
-        s["census"] = census
-
-        # Neighbourhood polygons: prefer city-configured GeoJSON, fall back to census tracts
-        nb_file     = city_cfg.get("neighborhoods_file")
-        use_custom  = nb_file and os.path.isfile(nb_file)
-        nb_gdf      = None
-        try:
-            if use_custom:
-                nb_gdf = (gpd.read_file(nb_file)[["name", "geometry"]]
-                          .dropna(subset=["geometry", "name"])
-                          .reset_index(drop=True))
-                print(f"   🏘  Loaded {len(nb_gdf)} neighbourhoods from {os.path.basename(nb_file)}")
-            else:
-                tracts   = census.fetch_tiger_tracts()
-                name_col = "NAMELSAD" if "NAMELSAD" in tracts.columns else "NAME"
-                nb_gdf   = (tracts[[name_col, "geometry"]]
-                            .copy()
-                            .rename(columns={name_col: "name"})
-                            .dropna(subset=["geometry", "name"])
-                            .loc[lambda d: ~d["name"].astype(str).str.contains("9902", na=False)]
-                            .reset_index(drop=True))
-            s["neighborhoods_gdf"] = nb_gdf
-        except Exception as _nb_err:
-            print(f"   ⚠  Neighbourhood polygon extraction skipped: {_nb_err}")
-            s.setdefault("neighborhoods_gdf", None)
-
-        # Assign neighbourhood names to hexes (custom GeoJSON takes OSM-style override path)
-        try:
-            neighborhoods = census.assign_neighborhoods_to_hexes(
-                grid, osm_neighborhoods_gdf=nb_gdf if use_custom else None
+        # Network — build once per session, reuse on subsequent PCI runs
+        if "network" not in s:
+            net = MultiModalNetworkBuilder(
+                fetcher.boundary_polygon,
+                gtfs_path=city_cfg.get("gtfs_path"),
+                travel_speeds=city_cfg["travel_speeds"],
+                travel_costs=city_cfg["travel_costs"],
+                time_penalties=city_cfg["time_penalties"],
+                median_hourly_wage=city_cfg["median_hourly_wage"],
             )
-            grid.attach_data(neighborhoods, "neighborhood")
-        except Exception as _nb_err:
-            print(f"   ⚠  Neighborhood assignment skipped: {_nb_err}")
+            net.build_all_networks(cache_dir=CACHE_DIR)
+            s["network"] = net
+        else:
+            net = s["network"]
+            print("   ♻  Reusing network already in session")
+
+        # Census — fetch once per session
+        if "income_by_hex" not in s:
+            census = CensusDataFetcher(
+                year=city_cfg["census_year"],
+                state_fips=city_cfg["state_fips"],
+                county_fips=city_cfg["county_fips"],
+                cache_dir=CACHE_DIR,
+            )
+            all_census = census.assign_all_to_hexes(grid)
+            s["income_by_hex"]     = all_census["median_income"]
+            s["population_by_hex"] = all_census["population"]
+            s["labour_by_hex"]     = all_census["labour"]
+            grid.attach_data(all_census["median_income"], "median_income")
+            grid.attach_data(all_census["population"],    "population")
+            s["census"] = census
+        else:
+            census = s.get("census")
+            print("   ♻  Reusing census data already in session")
+
+        # Neighbourhood polygons — build once per session
+        if "neighborhoods_gdf" not in s:
+            nb_file     = city_cfg.get("neighborhoods_file")
+            use_custom  = nb_file and os.path.isfile(nb_file)
+            nb_gdf      = None
+            try:
+                if use_custom:
+                    nb_gdf = (gpd.read_file(nb_file)[["name", "geometry"]]
+                              .dropna(subset=["geometry", "name"])
+                              .reset_index(drop=True))
+                    print(f"   🏘  Loaded {len(nb_gdf)} neighbourhoods from {os.path.basename(nb_file)}")
+                else:
+                    tracts   = census.fetch_tiger_tracts()
+                    name_col = "NAMELSAD" if "NAMELSAD" in tracts.columns else "NAME"
+                    nb_gdf   = (tracts[[name_col, "geometry"]]
+                                .copy()
+                                .rename(columns={name_col: "name"})
+                                .dropna(subset=["geometry", "name"])
+                                .loc[lambda d: ~d["name"].astype(str).str.contains("9902", na=False)]
+                                .reset_index(drop=True))
+                s["neighborhoods_gdf"] = nb_gdf
+            except Exception as _nb_err:
+                print(f"   ⚠  Neighbourhood polygon extraction skipped: {_nb_err}")
+                s.setdefault("neighborhoods_gdf", None)
+
+        # Assign neighbourhood names to hexes — only if not already on the grid
+        if "neighborhood" not in grid.gdf.columns:
+            nb_gdf        = s.get("neighborhoods_gdf")
+            nb_file       = city_cfg.get("neighborhoods_file")
+            use_custom    = nb_file and os.path.isfile(nb_file)
+            safe_city     = city_name.replace(",", "").replace(" ", "_").replace("/", "_")
+            nb_cache_path = os.path.join(CACHE_DIR, f"neighborhoods_{safe_city}.pkl")
+            try:
+                if os.path.exists(nb_cache_path):
+                    with open(nb_cache_path, "rb") as f:
+                        neighborhoods = pickle.load(f)
+                    print("   📦 Neighborhoods loaded from cache")
+                else:
+                    neighborhoods = census.assign_neighborhoods_to_hexes(
+                        grid, osm_neighborhoods_gdf=nb_gdf if use_custom else None
+                    )
+                    try:
+                        with open(nb_cache_path, "wb") as f:
+                            pickle.dump(neighborhoods, f, protocol=pickle.HIGHEST_PROTOCOL)
+                    except Exception as _ce:
+                        print(f"   ⚠  Could not cache neighborhoods: {_ce}")
+                grid.attach_data(neighborhoods, "neighborhood")
+            except Exception as _nb_err:
+                print(f"   ⚠  Neighborhood assignment skipped: {_nb_err}")
 
         diag = validate_network(net, grid, verbose=False)
         return jsonify({"status": "ok", "network_stats": diag["unified"]})
@@ -413,10 +467,34 @@ def pci_compute():
         mass = mass_calc.compute_composite_mass()
         grid.attach_data(mass, "mass")
 
-        # Hansen model
-        ham = HansenAccessibilityModel(grid, net, mass_calc)
-        ham.compute_travel_times(max_time=city_cfg["max_travel_time"])
-        avg_cost = sum(city_cfg["travel_costs"].values()) / len(city_cfg["travel_costs"])
+        # Travel-time cache path (depends only on city/network, not on params)
+        safe_city     = city_name.replace(",", "").replace(" ", "_").replace("/", "_")
+        tt_cache_path = os.path.join(CACHE_DIR, f"tt_pci_{safe_city}.pkl")
+        avg_cost      = sum(city_cfg["travel_costs"].values()) / len(city_cfg["travel_costs"])
+
+        existing_ham = s.get("ham")
+        if existing_ham is not None and existing_ham._travel_times is not None:
+            # Travel times already in session — just reuse them
+            ham = existing_ham
+            ham.mass = mass_calc
+            print("   ♻  Reusing travel times from session")
+        elif os.path.exists(tt_cache_path):
+            # Load travel times from disk (survives server restarts)
+            ham = HansenAccessibilityModel(grid, net, mass_calc)
+            with open(tt_cache_path, "rb") as f:
+                ham._travel_times = pickle.load(f)
+            n = sum(len(v) for v in ham._travel_times.values())
+            print(f"   📦 Travel times loaded from cache ({n:,} hex-pairs)")
+        else:
+            # First run — compute Dijkstra and save to disk
+            ham = HansenAccessibilityModel(grid, net, mass_calc)
+            ham.compute_travel_times(max_time=city_cfg["max_travel_time"])
+            try:
+                with open(tt_cache_path, "wb") as f:
+                    pickle.dump(ham._travel_times, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f"   💾 Travel times cached → {os.path.basename(tt_cache_path)}")
+            except Exception as exc:
+                print(f"   ⚠  Could not cache travel times: {exc}")
         acc = ham.compute_accessibility(
             beta=up["hansen_beta"],
             income_data=s["income_by_hex"],
@@ -637,19 +715,24 @@ def bci_build_network():
             net.build_all_networks(cache_dir=CACHE_DIR)
             s["network"] = net
 
-        # BCI Hansen model
         grid = s["grid"]
         net  = s["network"]
-        bci_hansen = BCIHansenAccessibility(
-            grid, net,
-            beta_params={
-                "market":   user_params["beta_market"],
-                "labour":   user_params["beta_labour"],
-                "supplier": user_params["beta_supplier"],
-            },
-        )
-        bci_hansen.build_component_graphs()
-        s["bci_hansen"] = bci_hansen
+
+        # BCI Hansen model — build component graphs once per session
+        if "bci_hansen" not in s:
+            bci_hansen = BCIHansenAccessibility(
+                grid, net,
+                beta_params={
+                    "market":   user_params["beta_market"],
+                    "labour":   user_params["beta_labour"],
+                    "supplier": user_params["beta_supplier"],
+                },
+            )
+            bci_hansen.build_component_graphs()
+            s["bci_hansen"] = bci_hansen
+        else:
+            bci_hansen = s["bci_hansen"]
+            print("   ♻  Reusing BCI Hansen model from session")
 
         return jsonify({"status": "ok"})
 
@@ -685,7 +768,29 @@ def bci_compute():
             "supplier": up["beta_supplier"],
         }
 
-        bci_hansen.compute_all_travel_times(max_time=city_cfg["max_travel_time"])
+        # BCI travel-time cache path
+        safe_city      = s.get("city_name", "unknown").replace(",", "").replace(" ", "_").replace("/", "_")
+        tt_bci_path    = os.path.join(CACHE_DIR, f"tt_bci_{safe_city}.pkl")
+        _tt_populated  = all(
+            comp in bci_hansen._travel_times and bci_hansen._travel_times[comp]
+            for comp in ("market", "labour", "supplier")
+        )
+
+        if _tt_populated:
+            print("   ♻  Reusing BCI travel times from session")
+        elif os.path.exists(tt_bci_path):
+            with open(tt_bci_path, "rb") as f:
+                bci_hansen._travel_times = pickle.load(f)
+            print(f"   📦 BCI travel times loaded from cache")
+        else:
+            bci_hansen.compute_all_travel_times(max_time=city_cfg["max_travel_time"])
+            try:
+                with open(tt_bci_path, "wb") as f:
+                    pickle.dump(bci_hansen._travel_times, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f"   💾 BCI travel times cached → {os.path.basename(tt_bci_path)}")
+            except Exception as exc:
+                print(f"   ⚠  Could not cache BCI travel times: {exc}")
+
         # Pass raw masses directly — matches notebook BCIHansenAccessibility.compute_accessibility()
         bci_hansen.compute_all_accessibility(
             market_mass=mass_calc.market_mass,
