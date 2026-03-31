@@ -6,6 +6,8 @@ Used by both PCI (income/cost adjustment) and BCI (population, labour, income).
 """
 
 import os
+import hashlib
+import pickle
 import requests
 import tempfile
 import zipfile
@@ -46,11 +48,14 @@ class CensusDataFetcher:
         state_fips: str,
         county_fips: str,
         api_key: Optional[str] = None,
+        cache_dir: Optional[str] = None,
     ):
         self.year = year
         self.state_fips = str(state_fips).zfill(2)
         self.county_fips = str(county_fips).zfill(3)
         self.api_key = api_key
+        self._cache_dir = cache_dir
+        self._cache_key = f"{year}_{self.state_fips}_{self.county_fips}"
         self._tracts_gdf: Optional[gpd.GeoDataFrame] = None
         self._acs_df: Optional[pd.DataFrame] = None
         self._merged_gdf: Optional[gpd.GeoDataFrame] = None
@@ -69,6 +74,19 @@ class CensusDataFetcher:
         """
         if variables is None:
             variables = list(CENSUS_VARS.values())
+
+        # Disk cache check
+        if self._cache_dir:
+            path = os.path.join(self._cache_dir, f"acs_{self._cache_key}.pkl")
+            if os.path.exists(path):
+                try:
+                    with open(path, "rb") as f:
+                        df = pickle.load(f)
+                    print(f"   📦 ACS data loaded from cache ({len(df)} tracts)")
+                    self._acs_df = df
+                    return df
+                except Exception as exc:
+                    print(f"   ⚠  ACS cache load failed ({exc}) — re-fetching")
 
         base_url = f"https://api.census.gov/data/{self.year}/acs/acs5"
         params = {
@@ -104,6 +122,16 @@ class CensusDataFetcher:
                 print(f"   {var}: {valid}/{len(df)} valid tracts")
 
         self._acs_df = df
+
+        if self._cache_dir:
+            try:
+                os.makedirs(self._cache_dir, exist_ok=True)
+                path = os.path.join(self._cache_dir, f"acs_{self._cache_key}.pkl")
+                with open(path, "wb") as f:
+                    pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
+            except Exception as exc:
+                print(f"   ⚠  Could not save ACS data to disk cache: {exc}")
+
         return df
 
     # ------------------------------------------------------------------
@@ -114,6 +142,19 @@ class CensusDataFetcher:
         """Download TIGER tract shapefile and return as GeoDataFrame."""
         if self._tracts_gdf is not None:
             return self._tracts_gdf
+
+        # Disk cache check
+        if self._cache_dir:
+            path = os.path.join(self._cache_dir, f"tiger_{self._cache_key}.pkl")
+            if os.path.exists(path):
+                try:
+                    with open(path, "rb") as f:
+                        gdf = pickle.load(f)
+                    print(f"   📦 TIGER tracts loaded from cache ({len(gdf)} tracts)")
+                    self._tracts_gdf = gdf
+                    return gdf
+                except Exception as exc:
+                    print(f"   ⚠  TIGER cache load failed ({exc}) — re-downloading")
 
         print("🗺  Downloading TIGER tract geometries...")
 
@@ -147,6 +188,16 @@ class CensusDataFetcher:
                     gdf = gdf[gdf["COUNTYFP"] == self.county_fips].copy()
                     self._tracts_gdf = gdf
                     print(f"   ✓ {len(gdf)} tracts loaded")
+                    if self._cache_dir:
+                        try:
+                            os.makedirs(self._cache_dir, exist_ok=True)
+                            cache_path = os.path.join(
+                                self._cache_dir, f"tiger_{self._cache_key}.pkl"
+                            )
+                            with open(cache_path, "wb") as cf:
+                                pickle.dump(gdf, cf, protocol=pickle.HIGHEST_PROTOCOL)
+                        except Exception as exc:
+                            print(f"   ⚠  Could not save TIGER data to disk cache: {exc}")
                     return gdf
             except Exception as exc:
                 print(f"   ⚠  {url}: {exc}")
