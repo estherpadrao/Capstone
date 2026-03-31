@@ -253,6 +253,25 @@ def pci_init():
     user_params = {**get_default_user_params(), **(data.get("user_params") or {})}
 
     s = get_state(sid())
+
+    # If same city and session already has grid + amenities, just update params
+    # and recompute mass (fast) — skip all OSM fetching and grid building
+    if (s.get("city_name") == city_name
+            and "grid" in s
+            and "amenities" in s
+            and "mass_calc" in s):
+        s["user_params"] = user_params
+        grid      = s["grid"]
+        amenities = s["amenities"]
+        mass_calc = s["mass_calc"]
+        mass_calc.amenity_weights = user_params["amenity_weights"]
+        mass = mass_calc.compute_composite_mass()
+        grid.attach_data(mass, "mass")
+        for name, layer in mass_calc.layers.items():
+            grid.attach_data(layer.normalized_values, f"{name}_norm")
+        print("   ♻  Reusing grid & amenities already in session")
+        return jsonify({"status": "ok", "n_hexagons": len(grid)})
+
     try:
         city_cfg = get_city_config(city_name)
         s["city_name"] = city_name
@@ -426,10 +445,18 @@ def pci_compute():
         mass = mass_calc.compute_composite_mass()
         grid.attach_data(mass, "mass")
 
-        # Hansen model
-        ham = HansenAccessibilityModel(grid, net, mass_calc)
-        ham.compute_travel_times(max_time=city_cfg["max_travel_time"])
+        # Hansen model — reuse travel times if already computed for this network
         avg_cost = sum(city_cfg["travel_costs"].values()) / len(city_cfg["travel_costs"])
+        existing_ham = s.get("ham")
+        if existing_ham is not None and existing_ham._travel_times is not None:
+            # Travel times are pure network geometry — unaffected by beta/weights/lambda.
+            # Reuse them and only recompute the fast accessibility decay step.
+            ham = existing_ham
+            ham.mass = mass_calc
+            print("   ♻  Reusing travel times already in session")
+        else:
+            ham = HansenAccessibilityModel(grid, net, mass_calc)
+            ham.compute_travel_times(max_time=city_cfg["max_travel_time"])
         acc = ham.compute_accessibility(
             beta=up["hansen_beta"],
             income_data=s["income_by_hex"],
