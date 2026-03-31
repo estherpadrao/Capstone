@@ -407,7 +407,7 @@ def pci_build_network():
             nb_gdf        = s.get("neighborhoods_gdf")
             nb_file       = city_cfg.get("neighborhoods_file")
             use_custom    = nb_file and os.path.isfile(nb_file)
-            safe_city     = city_name.replace(",", "").replace(" ", "_").replace("/", "_")
+            safe_city     = s.get("city_name", "unknown").replace(",", "").replace(" ", "_").replace("/", "_")
             nb_cache_path = os.path.join(CACHE_DIR, f"neighborhoods_{safe_city}.pkl")
             try:
                 if os.path.exists(nb_cache_path):
