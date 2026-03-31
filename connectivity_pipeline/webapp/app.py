@@ -550,19 +550,23 @@ def pci_visualize():
         nb_colors = build_neighborhood_colors(neighborhoods_gdf["name"].tolist())
         nb_stats  = compute_neighborhood_stats(grid.gdf, "PCI", neighborhoods_gdf, nb_colors)
 
-    return jsonify({
-        "status":              "ok",
-        "topography_layers":   plot_topography_layers(grid, mass_calc, city_name),
-        "topography_3d":       plot_topography_3d(grid, mass_calc, city_name),
-        "pci_components":      plot_pci_components(grid, city_name),
-        "pci_distribution":    plot_pci_distribution(pci, city_name),
-        "pci_map":             make_pci_map(
-                                   grid, pci, net, city_name,
-                                   neighborhoods_gdf=neighborhoods_gdf,
-                               )._repr_html_(),
-        "stats":               compute_pci_stats(pci, grid),
-        "neighborhoods":       nb_stats,
-    })
+    try:
+        return jsonify({
+            "status":              "ok",
+            "topography_layers":   plot_topography_layers(grid, mass_calc, city_name),
+            "topography_3d":       plot_topography_3d(grid, mass_calc, city_name),
+            "pci_components":      plot_pci_components(grid, city_name),
+            "pci_distribution":    plot_pci_distribution(pci, city_name),
+            "pci_map":             make_pci_map(
+                                       grid, pci, net, city_name,
+                                       neighborhoods_gdf=neighborhoods_gdf,
+                                   )._repr_html_(),
+            "stats":               compute_pci_stats(pci, grid),
+            "neighborhoods":       nb_stats,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"Visualization failed: {e}"}), 500
 
 
 # ---------------------------------------------------------------------------
