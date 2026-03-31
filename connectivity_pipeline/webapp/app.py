@@ -90,6 +90,9 @@ STATE: dict = {}
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
 # Keys saved to / restored from disk (excludes large network graphs)
 _PERSIST_KEYS = [
     # Core results
@@ -267,7 +270,7 @@ def pci_init():
         s["fetcher"] = fetcher
 
         # Amenities
-        osm = OSMDataFetcher(fetcher.boundary_polygon)
+        osm = OSMDataFetcher(fetcher.boundary_polygon, cache_dir=CACHE_DIR)
         osm.set_enabled_tags(user_params["enabled_amenity_tags"])
         amenities = osm.fetch_all()
         s["amenities"] = amenities
@@ -319,7 +322,7 @@ def pci_build_network():
             time_penalties=city_cfg["time_penalties"],
             median_hourly_wage=city_cfg["median_hourly_wage"],
         )
-        net.build_all_networks()
+        net.build_all_networks(cache_dir=CACHE_DIR)
         s["network"] = net
 
         # Census income
@@ -327,6 +330,7 @@ def pci_build_network():
             year=city_cfg["census_year"],
             state_fips=city_cfg["state_fips"],
             county_fips=city_cfg["county_fips"],
+            cache_dir=CACHE_DIR,
         )
         all_census = census.assign_all_to_hexes(grid)
         s["income_by_hex"]     = all_census["median_income"]
@@ -520,7 +524,7 @@ def bci_init():
         s["user_params"] = user_params
 
         # Supplier data from OSM
-        supplier_fetcher = SupplierDataFetcher(fetcher.boundary_polygon)
+        supplier_fetcher = SupplierDataFetcher(fetcher.boundary_polygon, cache_dir=CACHE_DIR)
         supplier_fetcher.set_enabled_tags(user_params["enabled_supplier_tags"])
         suppliers_gdf    = supplier_fetcher.fetch_suppliers()
         supplier_counts  = supplier_fetcher.compute_supplier_density(grid.gdf, suppliers_gdf)
@@ -532,6 +536,7 @@ def bci_init():
                 year=city_cfg["census_year"],
                 state_fips=city_cfg["state_fips"],
                 county_fips=city_cfg["county_fips"],
+                cache_dir=CACHE_DIR,
             )
             all_census = census.assign_all_to_hexes(grid)
             s["income_by_hex"]     = all_census["median_income"]
@@ -629,7 +634,7 @@ def bci_build_network():
                 time_penalties=city_cfg["time_penalties"],
                 median_hourly_wage=city_cfg["median_hourly_wage"],
             )
-            net.build_all_networks()
+            net.build_all_networks(cache_dir=CACHE_DIR)
             s["network"] = net
 
         # BCI Hansen model

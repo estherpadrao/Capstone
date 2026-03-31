@@ -6,6 +6,9 @@ Each tag category can be toggled on/off at runtime.
 Used by both PCI (amenities) and BCI (suppliers).
 """
 
+import os
+import hashlib
+import pickle
 import osmnx as ox
 import geopandas as gpd
 import pandas as pd
@@ -73,16 +76,21 @@ class OSMDataFetcher:
         fetcher.set_enabled_tags({"health": True, "parks": False, ...})
     """
 
-    def __init__(self, boundary):
+    def __init__(self, boundary, cache_dir: Optional[str] = None):
         """
         Parameters
         ----------
-        boundary : Shapely polygon (EPSG:4326) or GeoDataFrame
+        boundary  : Shapely polygon (EPSG:4326) or GeoDataFrame
+        cache_dir : optional path to a directory for disk-persisted GeoDataFrames.
+                    When set, each category is saved as a pickle on first fetch and
+                    loaded from disk on subsequent runs (skipping OSM calls).
         """
         if isinstance(boundary, gpd.GeoDataFrame):
             from shapely.ops import unary_union
             boundary = unary_union(boundary.to_crs(4326).geometry)
         self.boundary = boundary
+        self._cache_dir = cache_dir
+        self._boundary_hash = hashlib.md5(boundary.wkt.encode()).hexdigest()[:12]
         self._cache: Dict[str, Optional[gpd.GeoDataFrame]] = {}
         # All tags enabled by default
         self.enabled_tags: Dict[str, bool] = {k: True for k in PCI_OSM_TAGS}
@@ -113,9 +121,16 @@ class OSMDataFetcher:
         return amenities
 
     def fetch_category(self, name: str) -> Optional[gpd.GeoDataFrame]:
-        """Fetch a single amenity category (result cached in memory)."""
+        """Fetch a single amenity category (memory-cached, then disk-cached, then OSM)."""
         if name in self._cache:
             return self._cache[name]
+
+        # Disk cache check
+        if self._cache_dir:
+            gdf = self._load_disk_cache(name)
+            if gdf is not None:
+                self._cache[name] = gdf
+                return gdf
 
         tags = PCI_OSM_TAGS.get(name)
         if tags is None:
@@ -131,12 +146,42 @@ class OSMDataFetcher:
             gdf = gdf.to_crs("EPSG:4326")
             print(f"   ✓  {name}: {len(gdf)} features")
             self._cache[name] = gdf
+            if self._cache_dir:
+                self._save_disk_cache(name, gdf)
             return gdf
 
         except Exception as exc:
             print(f"   ⚠  {name}: failed ({exc})")
             self._cache[name] = None
             return None
+
+    # ------------------------------------------------------------------
+    # Disk cache helpers
+    # ------------------------------------------------------------------
+
+    def _disk_cache_path(self, name: str) -> str:
+        return os.path.join(self._cache_dir, f"amenity_{self._boundary_hash}_{name}.pkl")
+
+    def _load_disk_cache(self, name: str) -> Optional[gpd.GeoDataFrame]:
+        path = self._disk_cache_path(name)
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                gdf = pickle.load(f)
+            print(f"   📦 {name}: loaded from cache ({len(gdf)} features)")
+            return gdf
+        except Exception as exc:
+            print(f"   ⚠  {name}: disk cache load failed ({exc})")
+            return None
+
+    def _save_disk_cache(self, name: str, gdf: gpd.GeoDataFrame):
+        try:
+            os.makedirs(self._cache_dir, exist_ok=True)
+            with open(self._disk_cache_path(name), "wb") as f:
+                pickle.dump(gdf, f, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception as exc:
+            print(f"   ⚠  Could not save {name} to disk cache: {exc}")
 
     def clear_cache(self, name: Optional[str] = None):
         """Clear cached results for one or all categories."""
@@ -160,11 +205,13 @@ class SupplierDataFetcher:
     Supports the same toggle interface as OSMDataFetcher.
     """
 
-    def __init__(self, boundary):
+    def __init__(self, boundary, cache_dir: Optional[str] = None):
         if isinstance(boundary, gpd.GeoDataFrame):
             from shapely.ops import unary_union
             boundary = unary_union(boundary.to_crs(4326).geometry)
         self.boundary = boundary
+        self._cache_dir = cache_dir
+        self._boundary_hash = hashlib.md5(boundary.wkt.encode()).hexdigest()[:12]
         self._cache: Dict[str, Optional[gpd.GeoDataFrame]] = {}
         self.enabled_tags: Dict[str, bool] = {k: True for k in BCI_SUPPLIER_TAGS}
 
@@ -197,6 +244,14 @@ class SupplierDataFetcher:
     def _fetch_one(self, name: str, tags: dict) -> Optional[gpd.GeoDataFrame]:
         if name in self._cache:
             return self._cache[name]
+
+        # Disk cache check
+        if self._cache_dir:
+            gdf = self._load_disk_cache(name)
+            if gdf is not None:
+                self._cache[name] = gdf
+                return gdf
+
         try:
             gdf = ox.features_from_polygon(self.boundary, tags=tags)
             if gdf is not None and len(gdf) > 0:
@@ -205,11 +260,41 @@ class SupplierDataFetcher:
             else:
                 gdf = None
             self._cache[name] = gdf
+            if self._cache_dir and gdf is not None:
+                self._save_disk_cache(name, gdf)
             return gdf
         except Exception as exc:
             print(f"   ⚠  {name}: failed ({exc})")
             self._cache[name] = None
             return None
+
+    # ------------------------------------------------------------------
+    # Disk cache helpers
+    # ------------------------------------------------------------------
+
+    def _disk_cache_path(self, name: str) -> str:
+        return os.path.join(self._cache_dir, f"supplier_{self._boundary_hash}_{name}.pkl")
+
+    def _load_disk_cache(self, name: str) -> Optional[gpd.GeoDataFrame]:
+        path = self._disk_cache_path(name)
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, "rb") as f:
+                gdf = pickle.load(f)
+            print(f"   📦 {name}: loaded from cache ({len(gdf)} features)")
+            return gdf
+        except Exception as exc:
+            print(f"   ⚠  {name}: supplier disk cache load failed ({exc})")
+            return None
+
+    def _save_disk_cache(self, name: str, gdf: gpd.GeoDataFrame):
+        try:
+            os.makedirs(self._cache_dir, exist_ok=True)
+            with open(self._disk_cache_path(name), "wb") as f:
+                pickle.dump(gdf, f, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception as exc:
+            print(f"   ⚠  Could not save supplier {name} to disk cache: {exc}")
 
     def compute_supplier_density(
         self,

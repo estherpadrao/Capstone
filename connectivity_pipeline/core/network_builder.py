@@ -8,6 +8,8 @@ Income data is embedded in the graph for cost-of-time adjustments.
 
 import os
 import math
+import hashlib
+import pickle
 import zipfile
 import warnings
 import numpy as np
@@ -167,15 +169,71 @@ class MultiModalNetworkBuilder:
     # Public API
     # ------------------------------------------------------------------
 
-    def build_all_networks(self) -> Dict[str, nx.MultiDiGraph]:
-        """Build all modal networks and the unified graph."""
+    def build_all_networks(self, cache_dir: Optional[str] = None) -> Dict[str, nx.MultiDiGraph]:
+        """Build all modal networks and the unified graph.
+
+        If *cache_dir* is given, a pre-built network pickle is loaded when
+        available (skipping all OSM fetches).  On a cache miss the networks are
+        built normally and then saved for future runs.
+        """
+        if cache_dir and self._try_load_cache(cache_dir):
+            return self.networks
+
         self._build_walk()
         self._build_bike()
         self._build_drive()
         self._build_transit()
         self._build_unified()
         self._build_kdtrees()
+
+        if cache_dir:
+            self._save_cache(cache_dir)
+
         return self.networks
+
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+
+    def _boundary_hash(self) -> str:
+        """Short deterministic hash of the boundary polygon WKT."""
+        return hashlib.md5(self.boundary.wkt.encode()).hexdigest()[:12]
+
+    def _cache_path(self, cache_dir: str) -> str:
+        return os.path.join(cache_dir, f"network_{self._boundary_hash()}.pkl")
+
+    def _save_cache(self, cache_dir: str):
+        os.makedirs(cache_dir, exist_ok=True)
+        payload = {
+            "networks":         self.networks,
+            "unified_graph":    self.unified_graph,
+            "_kdtrees":         self._kdtrees,
+            "_node_arrays":     self._node_arrays,
+            "_node_id_arrays":  self._node_id_arrays,
+        }
+        path = self._cache_path(cache_dir)
+        with open(path, "wb") as f:
+            pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"   💾 Network cached → {os.path.basename(path)}")
+
+    def _try_load_cache(self, cache_dir: str) -> bool:
+        path = self._cache_path(cache_dir)
+        if not os.path.exists(path):
+            return False
+        try:
+            with open(path, "rb") as f:
+                payload = pickle.load(f)
+            self.networks        = payload["networks"]
+            self.unified_graph   = payload["unified_graph"]
+            self._kdtrees        = payload["_kdtrees"]
+            self._node_arrays    = payload["_node_arrays"]
+            self._node_id_arrays = payload["_node_id_arrays"]
+            total_nodes = self.unified_graph.number_of_nodes() if self.unified_graph else 0
+            print(f"   📦 Network loaded from cache ({total_nodes:,} nodes)")
+            return True
+        except Exception as exc:
+            print(f"   ⚠  Network cache load failed ({exc}) — rebuilding")
+            return False
 
     def get_nearest_node(self, lat: float, lng: float, mode: str = "walk") -> int:
         """Return nearest network node for a given (lat, lng) point."""
