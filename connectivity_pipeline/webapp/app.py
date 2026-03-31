@@ -285,6 +285,16 @@ def pci_init():
             local_path=city_cfg.get("local_polygon_path"),
         )
         grid = fetcher.build_grid(resolution=city_cfg["h3_resolution"])
+
+        # Preserve BCI columns from the previous grid (same city/resolution = same hex IDs).
+        # Safety net for when the session guard didn't fire (e.g. after server restart).
+        old_grid = s.get("grid")
+        if old_grid is not None:
+            for col in ["BCI", "A_market", "A_labour", "A_supplier",
+                        "market_mass", "labour_mass", "supplier_mass"]:
+                if col in old_grid.gdf.columns:
+                    grid.attach_data(old_grid.gdf.set_index("hex_id")[col], col)
+
         s["grid"]    = grid
         s["fetcher"] = fetcher
 
@@ -394,13 +404,25 @@ def pci_build_network():
 
         # Assign neighbourhood names to hexes — only if not already on the grid
         if "neighborhood" not in grid.gdf.columns:
-            nb_gdf     = s.get("neighborhoods_gdf")
-            nb_file    = city_cfg.get("neighborhoods_file")
-            use_custom = nb_file and os.path.isfile(nb_file)
+            nb_gdf        = s.get("neighborhoods_gdf")
+            nb_file       = city_cfg.get("neighborhoods_file")
+            use_custom    = nb_file and os.path.isfile(nb_file)
+            safe_city     = city_name.replace(",", "").replace(" ", "_").replace("/", "_")
+            nb_cache_path = os.path.join(CACHE_DIR, f"neighborhoods_{safe_city}.pkl")
             try:
-                neighborhoods = census.assign_neighborhoods_to_hexes(
-                    grid, osm_neighborhoods_gdf=nb_gdf if use_custom else None
-                )
+                if os.path.exists(nb_cache_path):
+                    with open(nb_cache_path, "rb") as f:
+                        neighborhoods = pickle.load(f)
+                    print("   📦 Neighborhoods loaded from cache")
+                else:
+                    neighborhoods = census.assign_neighborhoods_to_hexes(
+                        grid, osm_neighborhoods_gdf=nb_gdf if use_custom else None
+                    )
+                    try:
+                        with open(nb_cache_path, "wb") as f:
+                            pickle.dump(neighborhoods, f, protocol=pickle.HIGHEST_PROTOCOL)
+                    except Exception as _ce:
+                        print(f"   ⚠  Could not cache neighborhoods: {_ce}")
                 grid.attach_data(neighborhoods, "neighborhood")
             except Exception as _nb_err:
                 print(f"   ⚠  Neighborhood assignment skipped: {_nb_err}")
