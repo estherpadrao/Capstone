@@ -445,18 +445,34 @@ def pci_compute():
         mass = mass_calc.compute_composite_mass()
         grid.attach_data(mass, "mass")
 
-        # Hansen model — reuse travel times if already computed for this network
-        avg_cost = sum(city_cfg["travel_costs"].values()) / len(city_cfg["travel_costs"])
+        # Travel-time cache path (depends only on city/network, not on params)
+        safe_city     = city_name.replace(",", "").replace(" ", "_").replace("/", "_")
+        tt_cache_path = os.path.join(CACHE_DIR, f"tt_pci_{safe_city}.pkl")
+        avg_cost      = sum(city_cfg["travel_costs"].values()) / len(city_cfg["travel_costs"])
+
         existing_ham = s.get("ham")
         if existing_ham is not None and existing_ham._travel_times is not None:
-            # Travel times are pure network geometry — unaffected by beta/weights/lambda.
-            # Reuse them and only recompute the fast accessibility decay step.
+            # Travel times already in session — just reuse them
             ham = existing_ham
             ham.mass = mass_calc
-            print("   ♻  Reusing travel times already in session")
+            print("   ♻  Reusing travel times from session")
+        elif os.path.exists(tt_cache_path):
+            # Load travel times from disk (survives server restarts)
+            ham = HansenAccessibilityModel(grid, net, mass_calc)
+            with open(tt_cache_path, "rb") as f:
+                ham._travel_times = pickle.load(f)
+            n = sum(len(v) for v in ham._travel_times.values())
+            print(f"   📦 Travel times loaded from cache ({n:,} hex-pairs)")
         else:
+            # First run — compute Dijkstra and save to disk
             ham = HansenAccessibilityModel(grid, net, mass_calc)
             ham.compute_travel_times(max_time=city_cfg["max_travel_time"])
+            try:
+                with open(tt_cache_path, "wb") as f:
+                    pickle.dump(ham._travel_times, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f"   💾 Travel times cached → {os.path.basename(tt_cache_path)}")
+            except Exception as exc:
+                print(f"   ⚠  Could not cache travel times: {exc}")
         acc = ham.compute_accessibility(
             beta=up["hansen_beta"],
             income_data=s["income_by_hex"],
@@ -677,19 +693,24 @@ def bci_build_network():
             net.build_all_networks(cache_dir=CACHE_DIR)
             s["network"] = net
 
-        # BCI Hansen model
         grid = s["grid"]
         net  = s["network"]
-        bci_hansen = BCIHansenAccessibility(
-            grid, net,
-            beta_params={
-                "market":   user_params["beta_market"],
-                "labour":   user_params["beta_labour"],
-                "supplier": user_params["beta_supplier"],
-            },
-        )
-        bci_hansen.build_component_graphs()
-        s["bci_hansen"] = bci_hansen
+
+        # BCI Hansen model — build component graphs once per session
+        if "bci_hansen" not in s:
+            bci_hansen = BCIHansenAccessibility(
+                grid, net,
+                beta_params={
+                    "market":   user_params["beta_market"],
+                    "labour":   user_params["beta_labour"],
+                    "supplier": user_params["beta_supplier"],
+                },
+            )
+            bci_hansen.build_component_graphs()
+            s["bci_hansen"] = bci_hansen
+        else:
+            bci_hansen = s["bci_hansen"]
+            print("   ♻  Reusing BCI Hansen model from session")
 
         return jsonify({"status": "ok"})
 
@@ -725,7 +746,29 @@ def bci_compute():
             "supplier": up["beta_supplier"],
         }
 
-        bci_hansen.compute_all_travel_times(max_time=city_cfg["max_travel_time"])
+        # BCI travel-time cache path
+        safe_city      = s.get("city_name", "unknown").replace(",", "").replace(" ", "_").replace("/", "_")
+        tt_bci_path    = os.path.join(CACHE_DIR, f"tt_bci_{safe_city}.pkl")
+        _tt_populated  = all(
+            comp in bci_hansen._travel_times and bci_hansen._travel_times[comp]
+            for comp in ("market", "labour", "supplier")
+        )
+
+        if _tt_populated:
+            print("   ♻  Reusing BCI travel times from session")
+        elif os.path.exists(tt_bci_path):
+            with open(tt_bci_path, "rb") as f:
+                bci_hansen._travel_times = pickle.load(f)
+            print(f"   📦 BCI travel times loaded from cache")
+        else:
+            bci_hansen.compute_all_travel_times(max_time=city_cfg["max_travel_time"])
+            try:
+                with open(tt_bci_path, "wb") as f:
+                    pickle.dump(bci_hansen._travel_times, f, protocol=pickle.HIGHEST_PROTOCOL)
+                print(f"   💾 BCI travel times cached → {os.path.basename(tt_bci_path)}")
+            except Exception as exc:
+                print(f"   ⚠  Could not cache BCI travel times: {exc}")
+
         # Pass raw masses directly — matches notebook BCIHansenAccessibility.compute_accessibility()
         bci_hansen.compute_all_accessibility(
             market_mass=mass_calc.market_mass,
