@@ -78,3 +78,9 @@ td{color:var(--text)}
 .about-prose h1{font-size:1.25rem;font-weight:700;margin-bottom:16px;color:var(--accent)}
 .about-prose p{margin-bottom:14px}
 .about-prose strong{color:#fff}
+/* Sidebar info boxes */
+.info-box{background:rgba(91,141,238,.07);border:1px solid rgba(91,141,238,.22);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:.74rem;color:var(--muted);line-height:1.5}
+.info-box-header{display:flex;align-items:center;gap:6px;font-weight:600;color:rgba(91,141,238,.85);cursor:pointer;user-select:none}
+.info-box-header .info-chevron{margin-left:auto;font-size:.62rem;transition:transform .2s}
+.info-box-body{margin-top:7px;display:none}
+.info-box-body.open{display:block}

@@ -23,13 +23,13 @@
   <main class="main" style="padding-bottom:48px">
 
     <div class="tabs">
-      <button class="tab active" data-tab="pci" onclick="showTab('pci')">PCI</button>
+      <button class="tab active" data-tab="about" onclick="showTab('about')">About</button>
+      <button class="tab" data-tab="pci" onclick="showTab('pci')">PCI</button>
       <button class="tab" data-tab="bci" onclick="showTab('bci')">BCI</button>
       <button class="tab" data-tab="compare" onclick="showTab('compare')">Compare</button>
       <button class="tab" data-tab="diagnostics" onclick="showTab('diagnostics')">Diagnostics</button>
       <button class="tab" data-tab="sensitivity" onclick="showTab('sensitivity')">Sensitivity</button>
       <button class="tab" data-tab="scenario" onclick="showTab('scenario')">Scenario Testing</button>
-      <button class="tab" data-tab="about" onclick="showTab('about')">About</button>
     </div>
 
     {% include 'partials/tab_pci.html' %}

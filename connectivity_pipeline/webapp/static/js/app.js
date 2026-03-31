@@ -2,7 +2,7 @@
    STATE
    ========================================================= */
 let _hasPCI = false, _hasBCI = false;
-let _activeTab = 'pci';
+let _activeTab = 'about';
 
 /* On page load, ask the server which results are already in session.
    This restores _hasPCI / _hasBCI after a browser refresh without
@@ -14,6 +14,7 @@ let _activeTab = 'pci';
     if (r.has_bci) _hasBCI = true;
     if (_hasPCI && _hasBCI) checkCompare();
   } catch (e) { /* server not ready yet */ }
+  showTab('about');
 })();
 
 /* =========================================================
@@ -996,3 +997,92 @@ function scReset() {
   onScTypeChange();
   setStatus('Scenario reset.', 'ok');
 }
+
+/* =========================================================
+   SIDEBAR INFO BOXES
+   Injected on page load to explain each parameter section.
+   Targets known element IDs; walks up to the nearest .section
+   ancestor and inserts after its .section-title.
+   ========================================================= */
+
+function _makeInfoBox(title, bodyHtml) {
+  const box     = document.createElement('div');
+  box.className = 'info-box';
+
+  const header = document.createElement('div');
+  header.className = 'info-box-header';
+  header.innerHTML =
+    `<i class="fas fa-circle-info" style="font-size:.68rem"></i>${title}` +
+    `<i class="fas fa-chevron-down info-chevron"></i>`;
+
+  const body     = document.createElement('div');
+  body.className = 'info-box-body';
+  body.innerHTML = bodyHtml;
+
+  header.addEventListener('click', () => {
+    body.classList.toggle('open');
+    header.querySelector('.info-chevron').style.transform =
+      body.classList.contains('open') ? 'rotate(180deg)' : '';
+  });
+
+  box.appendChild(header);
+  box.appendChild(body);
+  return box;
+}
+
+function _insertInfoBoxInSection(anchorId, box) {
+  const anchor = document.getElementById(anchorId);
+  if (!anchor) return;
+  const section = anchor.closest('.section');
+  if (!section) { anchor.parentNode.insertBefore(box, anchor); return; }
+  const title = section.querySelector('.section-title');
+  if (title) title.insertAdjacentElement('afterend', box);
+  else section.insertBefore(box, section.firstChild);
+}
+
+(function _injectInfoBoxes() {
+  _insertInfoBoxInSection('p-beta', _makeInfoBox('PCI Accessibility Parameters',
+    '<b>Hansen Beta (β)</b> — distance-decay exponent. Controls how fast accessibility' +
+    ' drops with travel time. Higher β = only very close amenities count;' +
+    ' lower β = longer trips are nearly as valued.' +
+    ' Typical range: 0.1 (flat/transit-rich) – 0.5 (hilly/car-dependent).<br><br>' +
+    '<b>Active Street Lambda (λ)</b> — multiplier that rewards hexagons with more' +
+    ' walkable or cyclable streets. Raises PCI for pedestrian-friendly areas.'
+  ));
+
+  _insertInfoBoxInSection('w-health', _makeInfoBox('Amenity Weights',
+    'Each weight sets how much a category contributes to the composite <b>amenity mass</b>.' +
+    ' Weights are automatically normalised to sum to 1.' +
+    ' Raise a category to give it more influence on the final PCI score.' +
+    ' Example: raising <em>Health</em> emphasises hospital and clinic proximity.'
+  ));
+
+  _insertInfoBoxInSection('tag-toggles', _makeInfoBox('Amenity Categories',
+    'Toggle which OSM feature types are included in the analysis.' +
+    ' Disabled categories contribute 0 to amenity mass regardless of their weight.' +
+    ' Use this to focus on only the services relevant to your research question.'
+  ));
+
+  _insertInfoBoxInSection('b-beta-m', _makeInfoBox('BCI Accessibility Parameters',
+    'Distance-decay exponents for each BCI component:<br>' +
+    '<b>Market β</b> — decay for consumer/retail access.<br>' +
+    '<b>Labour β</b> — decay for employment-zone access.<br>' +
+    '<b>Supplier β</b> — decay for wholesale/industrial supply access.<br><br>' +
+    '<b>Interface Lambda (λ)</b> adds a bonus for hexagons near city boundaries' +
+    ' or airports, capturing export and logistics potential.'
+  ));
+
+  _insertInfoBoxInSection('bci-method', _makeInfoBox('BCI Aggregation Method',
+    '<b>Geometric Mean</b> — penalises imbalanced access; a hexagon must score well' +
+    ' on all three components to get a high BCI.<br>' +
+    '<b>Weighted Average</b> — lets you assign explicit importance to each component.' +
+    ' Weights are normalised automatically.<br>' +
+    '<b>Min</b> — BCI equals the weakest component; highlights bottlenecks.'
+  ));
+
+  _insertInfoBoxInSection('supplier-tag-toggles', _makeInfoBox('Supplier Categories',
+    'Toggle which OSM business/land-use types count as suppliers.' +
+    ' These feed the <em>supplier mass</em> component of BCI.' +
+    ' Disable categories that are not relevant to your city\'s economic profile.'
+  ));
+})();
