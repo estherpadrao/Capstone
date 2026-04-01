@@ -898,10 +898,9 @@ async function loadNetworkMap() {
   const frame = document.getElementById('sc-net-map');
   const hint  = document.getElementById('netmap-hint');
   btn.disabled = true;
-  hint.textContent = 'Loading network map…';
+  hint.textContent = 'Building network map — this can take 20–60 s, please wait…';
   setStatus('Loading network map…', 'running');
 
-  const token = Date.now();
   let done = false;
   const finish = (ok, msg) => {
     if (done) return;
@@ -911,38 +910,23 @@ async function loadNetworkMap() {
     btn.disabled = false;
   };
 
-  try {
-    // Preflight: triggers map computation+caching on the backend but only
-    // returns a small JSON response (not the full HTML), so this await is
-    // fast once the backend finishes computing.
-    hint.textContent = 'Building network map (this may take 20–60 s for large cities)…';
-    const preflight = await fetch('/api/scenario/network_map_view?t=' + token + '&probe=1', { cache: 'no-store' });
-    if (!preflight.ok) throw new Error(`HTTP ${preflight.status}`);
-
-    // Map is now cached on the backend.  Register onload AFTER the probe so
-    // it is never accidentally triggered by the frame's initial empty state.
-    const mapUrl = '/api/scenario/network_map_view?t=' + token;
-    frame.onload = function () {
-      frame.classList.remove('hidden');
-      finish(true, 'Click any hex or drive edge to add it to the target selection.');
-    };
-    frame.onerror = function () {
-      finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
-    };
-
-    frame.src = mapUrl;
-    hint.textContent = 'Rendering map in browser…';
-
-    // Failsafe: avoid indefinite "loading..." if the iframe event never fires.
-    // Timer starts after frame.src is set (map is already cached, so this is
-    // purely browser-side parse/render time).
-    setTimeout(() => {
-      finish(false, 'Map still loading — please retry. If needed, run PCI/BCI first.');
-    }, 90000);
-  } catch (e) {
-    console.error(e);
+  // Point the iframe directly at the map endpoint.  The backend builds and
+  // caches the Folium HTML on first hit; subsequent loads are instant.
+  // onload fires once the iframe document is ready (even while hidden).
+  frame.onload = function () {
+    frame.classList.remove('hidden');
+    finish(true, 'Click any hex or drive edge to add it to the target selection.');
+  };
+  frame.onerror = function () {
     finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
-  }
+  };
+
+  frame.src = '/api/scenario/network_map_view?t=' + Date.now();
+
+  // Failsafe in case onload never fires (e.g. server error or very slow network).
+  setTimeout(() => {
+    finish(false, 'Map timed out — check the server terminal for errors and retry.');
+  }, 180000);
 }
 
 // ── Run scenario ───────────────────────────────────────────────────────────
