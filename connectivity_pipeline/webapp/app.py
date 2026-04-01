@@ -160,6 +160,30 @@ def sid() -> str:
     return session["sid"]
 
 
+def _recover_network_from_session(s: dict):
+    """
+    Best-effort network reuse for scenario maps after restore flows.
+    We never pickle `network`, but live session objects (ham/bci_hansen)
+    may still hold a reference to the already-built network builder.
+    """
+    if s.get("network") is not None:
+        return s["network"]
+
+    ham = s.get("ham")
+    if ham is not None and getattr(ham, "net", None) is not None:
+        s["network"] = ham.net
+        print("   ♻  Reused network from PCI Hansen model")
+        return s["network"]
+
+    bci_hansen = s.get("bci_hansen")
+    if bci_hansen is not None and getattr(bci_hansen, "net", None) is not None:
+        s["network"] = bci_hansen.net
+        print("   ♻  Reused network from BCI Hansen model")
+        return s["network"]
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Routes — general
 # ---------------------------------------------------------------------------
@@ -1074,7 +1098,7 @@ def scenario_network_map():
         }), 400
 
     try:
-        net = s.get("network")
+        net = _recover_network_from_session(s)
         m   = make_network_map(
             grid      = s["grid"],
             net       = net,
@@ -1104,10 +1128,24 @@ def scenario_network_map_view():
             status=400, mimetype="text/html",
         )
     try:
-        if "network_map_html" not in s:
+        net = _recover_network_from_session(s)
+        has_network = net is not None
+        cached_html = s.get("network_map_html")
+        cached_has_network = bool(s.get("network_map_has_network", False))
+        # Regenerate if:
+        # - no cache,
+        # - cache is legacy Folium notebook wrapper (<iframe...>),
+        # - network became available after a prior hex-only cache.
+        must_rebuild = (
+            not cached_html
+            or "<iframe" in cached_html
+            or (has_network and not cached_has_network)
+        )
+
+        if must_rebuild:
             m = make_network_map(
                 grid      = s["grid"],
-                net       = s.get("network"),
+                net       = net,
                 pci       = s.get("pci"),
                 bci       = s.get("bci"),
                 city_name = s.get("city_name", ""),
@@ -1115,6 +1153,7 @@ def scenario_network_map_view():
             # Serve full Folium HTML document (not notebook iframe wrapper),
             # so the scenario iframe can render and attach click handlers.
             s["network_map_html"] = m.get_root().render()
+            s["network_map_has_network"] = has_network
             print("   🗺  Network map rendered and cached in session")
         else:
             print("   ♻  Reusing cached network map")
@@ -1217,6 +1256,7 @@ def scenario_run_pci():
             return jsonify({"status": "error",
                             "message": f"Unknown scenario type: {scenario_type}"}), 400
 
+        result.pop("modified_by_hex", None)
         return jsonify({"status": "ok", **result})
 
     except Exception as e:
@@ -1278,6 +1318,7 @@ def scenario_run_bci():
             return jsonify({"status": "error",
                             "message": f"Unknown BCI scenario type: {scenario_type}"}), 400
 
+        result.pop("modified_by_hex", None)
         return jsonify({"status": "ok", **result})
     except Exception as e:
         traceback.print_exc()
