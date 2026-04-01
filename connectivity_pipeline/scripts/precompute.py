@@ -8,14 +8,14 @@ webapp never needs to hit external APIs at runtime.
 
 Usage
 -----
-    # All cities
-    python precompute.py
+    # All cities (from project root or connectivity_pipeline/)
+    python connectivity_pipeline/scripts/precompute.py
 
     # One specific city
-    python precompute.py --city "San Francisco, California, USA"
+    python connectivity_pipeline/scripts/precompute.py --city "San Francisco, California, USA"
 
     # Skip network build (amenities + census only)
-    python precompute.py --skip-network
+    python connectivity_pipeline/scripts/precompute.py --skip-network
 
 After running, upload the generated data/cache/ directory to your
 server alongside the rest of the project.
@@ -26,9 +26,10 @@ import os
 import sys
 import traceback
 
-# Make sure project modules are importable from the project root
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(PROJECT_ROOT, "connectivity_pipeline"))
+# Resolve connectivity_pipeline/ regardless of where the script is run from
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PIPELINE_DIR = os.path.dirname(_SCRIPT_DIR)          # connectivity_pipeline/
+sys.path.insert(0, _PIPELINE_DIR)
 
 from core.city_config import CITY_CONFIGS, get_default_user_params
 from core.boundary_grid import BoundaryFetcher
@@ -36,7 +37,7 @@ from core.osm_fetcher import OSMDataFetcher, SupplierDataFetcher
 from core.census_fetcher import CensusDataFetcher
 from core.network_builder import MultiModalNetworkBuilder
 
-CACHE_DIR = os.path.join(PROJECT_ROOT, "connectivity_pipeline", "data", "cache")
+CACHE_DIR = os.path.join(_PIPELINE_DIR, "data", "cache")
 
 
 def precompute_city(city_name: str, city_cfg: dict, skip_network: bool = False):

@@ -519,6 +519,9 @@ def pci_compute():
 
         stats = compute_pci_stats(pci, grid)
 
+        # Invalidate cached network map (now has updated PCI scores)
+        s.pop("network_map_html", None)
+
         # Persist results so diagnostics / sensitivity can reload without rerun
         save_results(s.get("city_name", "unknown"), s)
 
@@ -828,6 +831,9 @@ def bci_compute():
 
         stats = compute_bci_stats(bci, grid, bci_calc)
 
+        # Invalidate cached network map (now has updated BCI scores)
+        s.pop("network_map_html", None)
+
         # Persist results
         save_results(s.get("city_name", "unknown"), s)
 
@@ -1088,14 +1094,19 @@ def scenario_network_map_view():
             status=400, mimetype="text/html",
         )
     try:
-        m = make_network_map(
-            grid      = s["grid"],
-            net       = s.get("network"),
-            pci       = s.get("pci"),
-            bci       = s.get("bci"),
-            city_name = s.get("city_name", ""),
-        )
-        return Response(m._repr_html_(), status=200, mimetype="text/html")
+        if "network_map_html" not in s:
+            m = make_network_map(
+                grid      = s["grid"],
+                net       = s.get("network"),
+                pci       = s.get("pci"),
+                bci       = s.get("bci"),
+                city_name = s.get("city_name", ""),
+            )
+            s["network_map_html"] = m._repr_html_()
+            print("   🗺  Network map rendered and cached in session")
+        else:
+            print("   ♻  Reusing cached network map")
+        return Response(s["network_map_html"], status=200, mimetype="text/html")
     except Exception as e:
         traceback.print_exc()
         return Response(

@@ -2,20 +2,35 @@
    STATE
    ========================================================= */
 let _hasPCI = false, _hasBCI = false;
+// Set only after the viz payload has been applied — guards compare auto-run
+let _pciVizDone = false, _bciVizDone = false;
 let _activeTab = 'about';
 
-/* On page load, ask the server which results are already in session.
-   This restores _hasPCI / _hasBCI after a browser refresh without
-   requiring the user to click Restore. */
+/* On page load, restore session flags but do NOT auto-run compare —
+   compare only fires after both viz panels have been explicitly populated
+   in this browser session. */
 (async function restoreSessionFlags() {
   try {
     const r = await get('/api/session/status');
     if (r.has_pci) _hasPCI = true;
     if (r.has_bci) _hasBCI = true;
-    if (_hasPCI && _hasBCI) checkCompare();
   } catch (e) { /* server not ready yet */ }
   showTab('about');
 })();
+
+/* =========================================================
+   BROWSER NOTIFICATIONS
+   ========================================================= */
+if ('Notification' in window && Notification.permission === 'default') {
+  Notification.requestPermission();
+}
+
+function notify(title, body) {
+  if (!document.hidden) return;           // user is already on this tab
+  if (!('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+  new Notification(title, { body });
+}
 
 /* =========================================================
    WEIGHT NORMALIZATION (Option C)
@@ -219,6 +234,7 @@ async function runPCI() {
     applyPCIViz(r);
     _hasPCI = true;
     setStatus(`✓ PCI complete — ${r.stats.n_hexagons} hexagons, city score: ${r.stats.city_pci}`, 'ok');
+    notify('PCI Complete', `City score: ${r.stats.city_pci} · ${r.stats.n_hexagons} hexagons`);
     checkCompare();
 
   } catch(e) {
@@ -230,6 +246,7 @@ async function runPCI() {
 }
 
 function applyPCIViz(r) {
+  _pciVizDone = true;
   document.getElementById('pci-placeholder').classList.add('hidden');
   document.getElementById('pci-content').classList.remove('hidden');
   renderStats('pci-stats', r.stats, PCI_STAT_MAP);
@@ -272,6 +289,7 @@ async function runBCI() {
     applyBCIViz(r);
     _hasBCI = true;
     setStatus(`✓ BCI complete — ${r.stats.n_hexagons} hexagons`, 'ok');
+    notify('BCI Complete', `${r.stats.n_hexagons} hexagons computed`);
     checkCompare();
 
   } catch(e) {
@@ -283,6 +301,7 @@ async function runBCI() {
 }
 
 function applyBCIViz(r) {
+  _bciVizDone = true;
   document.getElementById('bci-placeholder').classList.add('hidden');
   document.getElementById('bci-content').classList.remove('hidden');
   renderStats('bci-stats', r.stats, BCI_STAT_MAP);
@@ -362,8 +381,8 @@ async function runBoth() {
    COMPARE
    ========================================================= */
 function checkCompare() {
-  // Auto-run the first time both indices become available
-  if (_hasPCI && _hasBCI) loadCompare();
+  // Auto-run only after both viz panels have been populated in this session
+  if (_pciVizDone && _bciVizDone) loadCompare();
 }
 
 async function runCompare() {
@@ -662,16 +681,43 @@ async function restoreResults() {
 async function runSensitivity(model) {
   const statusEl = document.getElementById('sens-status');
   statusEl.textContent = `Running ${model.toUpperCase()} sensitivity analysis…`;
-  document.getElementById('sens-tornado').classList.add('hidden');
-  document.getElementById('sens-table').classList.add('hidden');
+
+  // Hide legacy single-result containers (only shown if block system not yet active)
+  ['sens-tornado', 'sens-table'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+  });
+
   try {
     const r = await post(`/api/sensitivity/${model}`, {});
     if (r.error) { statusEl.textContent = 'Error: ' + r.error; return; }
-    document.getElementById('sens-tornado-img').src = 'data:image/png;base64,' + r.tornado_png;
-    document.getElementById('sens-tornado').classList.remove('hidden');
-    document.getElementById('sens-table-content').innerHTML = r.table_html;
-    document.getElementById('sens-table').classList.remove('hidden');
+
+    // Ensure the stacking container exists, anchored after the status line
+    let stack = document.getElementById('sens-results-stack');
+    if (!stack) {
+      stack = document.createElement('div');
+      stack.id = 'sens-results-stack';
+      statusEl.insertAdjacentElement('afterend', stack);
+    }
+
+    const blockId = `sens-block-${model}`;
+    let block = document.getElementById(blockId);
+    if (!block) {
+      // First time this model is run — prepend so newest is always on top
+      block = document.createElement('div');
+      block.id = blockId;
+      stack.insertBefore(block, stack.firstChild);
+    }
+    // Populate (or update) this model's result block
+    block.innerHTML =
+      `<div class="card" style="margin-bottom:16px">` +
+        `<div class="card-title">${model.toUpperCase()} Sensitivity Analysis</div>` +
+        `<img src="data:image/png;base64,${r.tornado_png}" class="viz-img" />` +
+        `<div>${r.table_html}</div>` +
+      `</div>`;
+
     statusEl.textContent = `${model.toUpperCase()} sensitivity complete.`;
+    notify(`${model.toUpperCase()} Sensitivity Done`, 'Tornado chart ready.');
   } catch(e) {
     const msg = (e.message.includes('Unexpected token') || e.message.includes('not valid JSON'))
       ? `Please run ${model.toUpperCase()} fully first (init → build network → compute), then try again.`
@@ -911,6 +957,7 @@ async function runScenario(indexType) {
     if (r.status !== 'ok') throw new Error(r.message);
     _scRenderResults(r, indexType, label);
     setStatus(`✓ Scenario complete — ${r.n_affected} hex(es) targeted`, 'ok');
+    notify('Scenario Complete', `${label} · ${r.n_affected} hex(es) affected`);
   } catch (e) {
     console.error(e);
     setStatus('Scenario error: ' + e.message, 'err');
