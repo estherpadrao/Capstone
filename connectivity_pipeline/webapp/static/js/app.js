@@ -893,7 +893,7 @@ function _updateAmenityCountLabel() {
 
 // ── Load network map ───────────────────────────────────────────────────────
 
-function loadNetworkMap() {
+async function loadNetworkMap() {
   const btn   = document.getElementById('btn-load-netmap');
   const frame = document.getElementById('sc-net-map');
   const hint  = document.getElementById('netmap-hint');
@@ -901,23 +901,38 @@ function loadNetworkMap() {
   hint.textContent = 'Loading network map…';
   setStatus('Loading network map…', 'running');
 
-  frame.onload = function () {
-    hint.textContent = 'Click any hex or drive edge to add it to the target selection.';
-    setStatus('✓ Network map loaded', 'ok');
-    btn.disabled = false;
-  };
-  frame.onerror = function () {
-    hint.textContent = 'Error loading network map — check that PCI or BCI has been run.';
-    setStatus('Network map error', 'err');
+  const token = Date.now();
+  let done = false;
+  const finish = (ok, msg) => {
+    if (done) return;
+    done = true;
+    if (msg) hint.textContent = msg;
+    setStatus(ok ? '✓ Network map loaded' : 'Network map error', ok ? 'ok' : 'err');
     btn.disabled = false;
   };
 
-  /* Load as a proper same-origin page so window.parent.scAddHex() works
-     without any cross-origin restriction.
-     Append a timestamp to bust the browser's iframe src cache so that
-     clicking the button a second time always triggers a fresh onload. */
-  frame.src = '/api/scenario/network_map_view?t=' + Date.now();
-  frame.classList.remove('hidden');
+  frame.onload = function () {
+    frame.classList.remove('hidden');
+    finish(true, 'Click any hex or drive edge to add it to the target selection.');
+  };
+  frame.onerror = function () {
+    finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
+  };
+
+  // Failsafe: avoid indefinite "loading..." if the iframe event never fires.
+  setTimeout(() => {
+    finish(false, 'Map still loading — please retry. If needed, run PCI/BCI first.');
+  }, 15000);
+
+  try {
+    // Explicit preflight request so backend/API activity is always visible.
+    const preflight = await fetch('/api/scenario/network_map_view?t=' + token + '&probe=1', { cache: 'no-store' });
+    if (!preflight.ok) throw new Error(`HTTP ${preflight.status}`);
+    frame.src = '/api/scenario/network_map_view?t=' + token;
+  } catch (e) {
+    console.error(e);
+    finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
+  }
 }
 
 // ── Run scenario ───────────────────────────────────────────────────────────
