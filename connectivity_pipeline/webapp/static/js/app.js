@@ -910,11 +910,14 @@ async function loadNetworkMap() {
     btn.disabled = false;
   };
 
-  // Point the iframe directly at the map endpoint.  The backend builds and
-  // caches the Folium HTML on first hit; subsequent loads are instant.
-  // onload fires once the iframe document is ready (even while hidden).
+  // Show the iframe shell immediately so Leaflet initialises in a visible
+  // container and calculates its dimensions correctly.  If the frame stayed
+  // hidden (display:none) during load, Leaflet would see a zero-size box and
+  // tiles would never appear even after the hidden class was removed.
+  frame.classList.remove('hidden');
+
+  // onload fires once the iframe document (and its scripts) are ready.
   frame.onload = function () {
-    frame.classList.remove('hidden');
     finish(true, 'Click any hex or drive edge to add it to the target selection.');
   };
   frame.onerror = function () {

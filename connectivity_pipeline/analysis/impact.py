@@ -863,12 +863,13 @@ def _build_result(
     city_name:      str,
 ) -> dict:
     delta = (modified - baseline).reindex(baseline.index)
-    delta_map = make_delta_map(grid.gdf, delta, baseline, modified, city_name)
     return {
         "stats":          compute_impact_stats(baseline, modified),
-        # srcdoc expects a complete HTML document; _repr_html_ returns a
-        # notebook iframe wrapper which can fail to render in nested iframes.
-        "delta_map_html": delta_map.get_root().render(),
+        # _repr_html_() wraps the map in a responsive padding-bottom container
+        # so Leaflet gets proper dimensions regardless of the iframe's CSS height.
+        "delta_map_html": make_delta_map(
+            grid.gdf, delta, baseline, modified, city_name
+        )._repr_html_(),
         "top_hexes":      top_affected_hexes(grid.gdf, delta),
         "n_affected":     len(affected_hexes),
     }
