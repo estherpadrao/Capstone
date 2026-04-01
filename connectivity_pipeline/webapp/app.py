@@ -184,6 +184,30 @@ def _recover_network_from_session(s: dict):
     return None
 
 
+def _prebuild_network_map(s: dict):
+    """
+    Build and cache the network map HTML while all data is fresh in session.
+    Called at the end of pci_compute and bci_compute so the scenario tab
+    endpoint can serve it instantly without any on-demand computation.
+    """
+    try:
+        net = _recover_network_from_session(s)
+        m   = make_network_map(
+            grid      = s["grid"],
+            net       = net,
+            pci       = s.get("pci"),
+            bci       = s.get("bci"),
+            city_name = s.get("city_name", ""),
+        )
+        s["network_map_html"]        = m.get_root().render()
+        s["network_map_has_network"] = net is not None
+        print("   🗺  Network map pre-built and cached")
+    except Exception as exc:
+        print(f"   ⚠  Network map pre-build skipped: {exc}")
+        s.pop("network_map_html", None)
+        s.pop("network_map_has_network", None)
+
+
 # ---------------------------------------------------------------------------
 # Routes — general
 # ---------------------------------------------------------------------------
@@ -549,8 +573,8 @@ def pci_compute():
 
         stats = compute_pci_stats(pci, grid)
 
-        # Invalidate cached network map (now has updated PCI scores)
-        s.pop("network_map_html", None)
+        # Pre-build network map now so the scenario tab serves it instantly.
+        _prebuild_network_map(s)
 
         # Persist results so diagnostics / sensitivity can reload without rerun
         save_results(s.get("city_name", "unknown"), s)
@@ -861,8 +885,8 @@ def bci_compute():
 
         stats = compute_bci_stats(bci, grid, bci_calc)
 
-        # Invalidate cached network map (now has updated BCI scores)
-        s.pop("network_map_html", None)
+        # Pre-build network map now so the scenario tab serves it instantly.
+        _prebuild_network_map(s)
 
         # Persist results
         save_results(s.get("city_name", "unknown"), s)
@@ -1128,36 +1152,20 @@ def scenario_network_map_view():
             status=400, mimetype="text/html",
         )
     try:
-        net = _recover_network_from_session(s)
-        has_network = net is not None
         cached_html = s.get("network_map_html")
-        cached_has_network = bool(s.get("network_map_has_network", False))
-        # Regenerate if:
-        # - no cache,
-        # - cache is legacy Folium notebook wrapper (<iframe...>),
-        # - network became available after a prior hex-only cache.
-        must_rebuild = (
-            not cached_html
-            or "<iframe" in cached_html
-            or (has_network and not cached_has_network)
-        )
+        # Legacy check: old cache used _repr_html_() which embeds an <iframe>.
+        if not cached_html or "<iframe" in cached_html:
+            # Fallback: build on demand (e.g. after restore without re-running compute).
+            _prebuild_network_map(s)
 
-        if must_rebuild:
-            m = make_network_map(
-                grid      = s["grid"],
-                net       = net,
-                pci       = s.get("pci"),
-                bci       = s.get("bci"),
-                city_name = s.get("city_name", ""),
+        if not s.get("network_map_html"):
+            return Response(
+                "<html><body style='font-family:sans-serif;padding:24px'>"
+                "Run PCI or BCI compute first, then reload this map.</body></html>",
+                status=400, mimetype="text/html",
             )
-            # Serve full Folium HTML document (not notebook iframe wrapper),
-            # so the scenario iframe can render and attach click handlers.
-            s["network_map_html"] = m.get_root().render()
-            s["network_map_has_network"] = has_network
-            print("   🗺  Network map rendered and cached in session")
-        else:
-            print("   ♻  Reusing cached network map")
 
+        print("   ♻  Serving pre-built network map")
         return Response(s["network_map_html"], status=200, mimetype="text/html")
     except Exception as e:
         traceback.print_exc()

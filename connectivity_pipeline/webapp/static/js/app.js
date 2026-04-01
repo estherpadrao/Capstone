@@ -21,8 +21,11 @@ let _activeTab = 'about';
 /* =========================================================
    BROWSER NOTIFICATIONS
    ========================================================= */
-if ('Notification' in window && Notification.permission === 'default') {
-  Notification.requestPermission();
+async function ensureNotificationPermission() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    await Notification.requestPermission();
+  }
 }
 
 function notify(title, body) {
@@ -209,6 +212,7 @@ Object.values(WEIGHT_GROUPS).forEach(ids => {
    PCI PIPELINE
    ========================================================= */
 async function runPCI() {
+  await ensureNotificationPermission();
   const city = document.getElementById('city-select').value;
   const up   = getUserParams();
   const btn  = document.getElementById('btn-pci');
@@ -264,6 +268,7 @@ function applyPCIViz(r) {
    BCI PIPELINE
    ========================================================= */
 async function runBCI() {
+  await ensureNotificationPermission();
   const city = document.getElementById('city-select').value;
   const up   = getUserParams();
   const btn  = document.getElementById('btn-bci');
@@ -404,6 +409,7 @@ async function runCompare() {
 }
 
 async function loadCompare() {
+  await ensureNotificationPermission();
   try {
     setStatus('Loading comparative analysis…', 'running');
     const r = await get('/api/compare/visualize');
@@ -418,6 +424,7 @@ async function loadCompare() {
     setImg('img-spatial',      r.spatial);
     setMapSrc('map-compare',   r.comparison_map);
     setStatus('✓ Comparison loaded', 'ok');
+    notify('Compare Ready', 'Both indices compared.');
   } catch(e) {
     console.error(e);
     setStatus('Compare error: ' + e.message, 'err');
@@ -428,6 +435,7 @@ async function loadCompare() {
    DIAGNOSTICS
    ========================================================= */
 async function runNetworkDiag() {
+  await ensureNotificationPermission();
   setStatus('Running network diagnostics…', 'running');
   try {
     const r = await get('/api/diagnostics/network');
@@ -486,6 +494,7 @@ async function runNetworkDiag() {
 
     document.getElementById('diag-output').innerHTML = html;
     setStatus('✓ Network diagnostics complete', 'ok');
+    notify('Diagnostics Done', 'Network report ready.');
   } catch(e) {
     setStatus('Diag error: ' + e.message, 'err');
     document.getElementById('diag-output').textContent = 'Error: ' + e.message;
@@ -493,6 +502,7 @@ async function runNetworkDiag() {
 }
 
 async function runTopoDiag() {
+  await ensureNotificationPermission();
   setStatus('Loading topography summary…', 'running');
   try {
     const r = await get('/api/diagnostics/topography');
@@ -513,12 +523,14 @@ async function runTopoDiag() {
     html += '</tbody></table>';
     document.getElementById('topo-diag-output').innerHTML = html;
     setStatus('✓ Topography summary loaded', 'ok');
+    notify('Topography Done', 'Summary ready.');
   } catch(e) {
     setStatus('Topo diag error: ' + e.message, 'err');
   }
 }
 
 async function runIsochrones() {
+  await ensureNotificationPermission();
   const maxOrigins = Math.min(parseInt(document.getElementById('iso-max-origins').value) || 5, 10);
   setStatus('Running isochrone analysis…', 'running');
   document.getElementById('iso-output').textContent = 'Computing isochrones…';
@@ -561,6 +573,7 @@ async function runIsochrones() {
     }
 
     setStatus('✓ Isochrone analysis complete', 'ok');
+    notify('Isochrones Done', 'Analysis complete.');
   } catch(e) {
     console.error(e);
     setStatus('Isochrone error: ' + e.message, 'err');
@@ -608,6 +621,7 @@ async function loadAbout() {
    RESTORE SAVED RESULTS
    ========================================================= */
 async function restoreResults() {
+  await ensureNotificationPermission();
   const city = document.getElementById('city-select').value;
   if (!city) { setStatus('Select a city first', 'err'); return; }
   setStatus('Restoring saved results…', 'running');
@@ -632,6 +646,7 @@ async function restoreResults() {
     if (r.has_pci) parts.push('PCI');
     if (r.has_bci) parts.push('BCI');
     setStatus(`✓ Restored ${parts.join(' + ')} results for ${r.city_name}`, 'ok');
+    notify('Results Restored', r.city_name);
   } catch(e) {
     setStatus('Restore failed: ' + e.message, 'err');
   }
@@ -679,6 +694,7 @@ async function restoreResults() {
 // ── Sensitivity Analysis ──
 
 async function runSensitivity(model) {
+  await ensureNotificationPermission();
   const statusEl = document.getElementById('sens-status');
   statusEl.textContent = `Running ${model.toUpperCase()} sensitivity analysis…`;
 
@@ -894,47 +910,37 @@ function _updateAmenityCountLabel() {
 // ── Load network map ───────────────────────────────────────────────────────
 
 async function loadNetworkMap() {
+  await ensureNotificationPermission();
   const btn   = document.getElementById('btn-load-netmap');
   const frame = document.getElementById('sc-net-map');
   const hint  = document.getElementById('netmap-hint');
   btn.disabled = true;
-  hint.textContent = 'Building network map — this can take 20–60 s, please wait…';
+  hint.textContent = 'Loading network map…';
   setStatus('Loading network map…', 'running');
 
-  let done = false;
-  const finish = (ok, msg) => {
-    if (done) return;
-    done = true;
-    if (msg) hint.textContent = msg;
-    setStatus(ok ? '✓ Network map loaded' : 'Network map error', ok ? 'ok' : 'err');
+  // Show before setting src so Leaflet initialises in a visible container
+  // and calculates its tile dimensions correctly.
+  frame.classList.remove('hidden');
+
+  frame.onload = function () {
+    hint.textContent = 'Click any hex or drive edge to add it to the target selection.';
+    setStatus('✓ Network map loaded', 'ok');
+    notify('Network Map Ready', 'Click any hex or edge to select it.');
+    btn.disabled = false;
+  };
+  frame.onerror = function () {
+    hint.textContent = 'Error loading network map — run PCI or BCI first, then retry.';
+    setStatus('Network map error', 'err');
     btn.disabled = false;
   };
 
-  // Show the iframe shell immediately so Leaflet initialises in a visible
-  // container and calculates its dimensions correctly.  If the frame stayed
-  // hidden (display:none) during load, Leaflet would see a zero-size box and
-  // tiles would never appear even after the hidden class was removed.
-  frame.classList.remove('hidden');
-
-  // onload fires once the iframe document (and its scripts) are ready.
-  frame.onload = function () {
-    finish(true, 'Click any hex or drive edge to add it to the target selection.');
-  };
-  frame.onerror = function () {
-    finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
-  };
-
   frame.src = '/api/scenario/network_map_view?t=' + Date.now();
-
-  // Failsafe in case onload never fires (e.g. server error or very slow network).
-  setTimeout(() => {
-    finish(false, 'Map timed out — check the server terminal for errors and retry.');
-  }, 180000);
 }
 
 // ── Run scenario ───────────────────────────────────────────────────────────
 
 async function runScenario(indexType) {
+  await ensureNotificationPermission();
   const type   = document.getElementById('sc-type').value;
   const radius = parseInt(document.getElementById('sc-radius').value)  || 0;
   const factor = parseFloat(document.getElementById('sc-factor').value) || 2.0;
