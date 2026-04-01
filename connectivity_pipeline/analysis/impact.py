@@ -249,9 +249,7 @@ def _add_network_edges(m: folium.Map, net):
     """
     MODE_STYLES = {
         #  mode       colour      shown   max_edges
-        "walk":    ("#455A64", False,  2_000),
-        "transit": ("#1976D2", True,   2_000),
-        "drive":   ("#BF360C", True,   3_000),
+        "drive":   ("#BF360C", True,  15_000),
     }
 
     for mode, (color, show, max_edges) in MODE_STYLES.items():
