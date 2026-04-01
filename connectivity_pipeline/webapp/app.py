@@ -903,14 +903,18 @@ def compare_visualize():
         return jsonify({"status": "error",
                         "message": "Both PCI and BCI must be computed first."}), 400
     city_name = s.get("city_name", "")
-    return jsonify({
-        "status":               "ok",
-        "scatter":              plot_scatter(grid, city_name),
-        "distribution":         plot_distribution_comparison(grid, city_name),
-        "spatial":              plot_spatial_comparison(grid, city_name),
-        "comparison_map":       make_comparison_map(grid)._repr_html_(),
-        "stats":                compute_comparative_stats(grid),
-    })
+    try:
+        return jsonify({
+            "status":               "ok",
+            "scatter":              plot_scatter(grid, city_name),
+            "distribution":         plot_distribution_comparison(grid, city_name),
+            "spatial":              plot_spatial_comparison(grid, city_name),
+            "comparison_map":       make_comparison_map(grid)._repr_html_(),
+            "stats":                compute_comparative_stats(grid),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"Compare visualization failed: {e}"}), 500
 
 
 # ---------------------------------------------------------------------------
