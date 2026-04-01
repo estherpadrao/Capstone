@@ -692,12 +692,20 @@ async function runSensitivity(model) {
     const r = await post(`/api/sensitivity/${model}`, {});
     if (r.error) { statusEl.textContent = 'Error: ' + r.error; return; }
 
-    // Ensure the stacking container exists, anchored after the status line
+    // Ensure the stacking container exists.
+    // Anchor it before #sens-tornado (the legacy single-result container)
+    // so it appears in the right position in the sensitivity tab.
     let stack = document.getElementById('sens-results-stack');
     if (!stack) {
       stack = document.createElement('div');
       stack.id = 'sens-results-stack';
-      statusEl.insertAdjacentElement('afterend', stack);
+      const legacyAnchor = document.getElementById('sens-tornado');
+      if (legacyAnchor) {
+        legacyAnchor.parentNode.insertBefore(stack, legacyAnchor);
+      } else {
+        // Fallback: append after the status element
+        statusEl.insertAdjacentElement('afterend', stack);
+      }
     }
 
     const blockId = `sens-block-${model}`;
@@ -905,8 +913,10 @@ function loadNetworkMap() {
   };
 
   /* Load as a proper same-origin page so window.parent.scAddHex() works
-     without any cross-origin restriction. */
-  frame.src = '/api/scenario/network_map_view';
+     without any cross-origin restriction.
+     Append a timestamp to bust the browser's iframe src cache so that
+     clicking the button a second time always triggers a fresh onload. */
+  frame.src = '/api/scenario/network_map_view?t=' + Date.now();
   frame.classList.remove('hidden');
 }
 
