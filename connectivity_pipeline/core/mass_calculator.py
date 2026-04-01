@@ -133,18 +133,33 @@ class MassCalculator:
         features = gdf.to_crs("EPSG:4326").copy()
 
         if use_area:
-            # Area in m²
+            # Compute intersection area between each park polygon and each hexagon.
+            # This correctly splits a park that spans multiple hexagons — each hex
+            # gets only the area that actually falls within it.
             features_m = features.to_crs(epsg=3857)
-            features["_area"] = features_m.geometry.area
-            features["geometry"] = features.geometry.centroid
-            joined = gpd.sjoin(
-                hex_gdf,
-                features[["geometry", "_area"]],
-                how="left",
-                predicate="intersects",
-            )
-            joined["_area"] = joined["_area"].fillna(0)
-            raw = joined.groupby("hex_id")["_area"].sum()
+            hex_m      = hex_gdf.to_crs(epsg=3857)
+            try:
+                clipped = gpd.overlay(
+                    hex_m[["hex_id", "geometry"]],
+                    features_m[["geometry"]],
+                    how="intersection",
+                    keep_geom_type=False,
+                )
+                clipped["_area"] = clipped.geometry.area
+                raw = clipped.groupby("hex_id")["_area"].sum()
+            except Exception:
+                # Fallback to centroid method if overlay fails (e.g. invalid geometries)
+                features_m["_area"] = features_m.geometry.area
+                features["_area"]   = features_m["_area"].values
+                features["geometry"] = features.geometry.centroid
+                joined = gpd.sjoin(
+                    hex_gdf,
+                    features[["geometry", "_area"]],
+                    how="left",
+                    predicate="intersects",
+                )
+                joined["_area"] = joined["_area"].fillna(0)
+                raw = joined.groupby("hex_id")["_area"].sum()
         else:
             # Use centroid for polygon features
             pts = features.copy()
