@@ -351,23 +351,48 @@ def make_comparison_map(grid: HexGrid) -> folium.Map:
     if "pci_bci_diff" not in gdf.columns:
         gdf["pci_bci_diff"] = gdf["PCI"] - gdf["BCI"]
 
-    def _add_choropleth(col, colors, name, show=True):
-        folium.Choropleth(
-            geo_data=gdf.to_json(),
-            data=gdf,
-            columns=["hex_id", col],
-            key_on="feature.properties.hex_id",
-            fill_color=colors,
-            fill_opacity=0.7,
-            line_opacity=0.2,
-            legend_name=name,
-            name=name,
-            show=show,
-        ).add_to(m)
+    def _add_layer(col, cmap_name, name, show=True):
+        series = gdf[col].dropna()
+        vmin, vmax = float(series.min()), float(series.max())
+        if vmin == vmax:
+            vmax = vmin + 1.0
 
-    _add_choropleth("PCI",          "Blues",  "People Connectivity Index (PCI)",  show=True)
-    _add_choropleth("BCI",          "Reds",   "Business Connectivity Index (BCI)", show=False)
-    _add_choropleth("pci_bci_diff", "RdBu",   "Difference (PCI − BCI)",           show=False)
+        colormap = LinearColormap(
+            colors=_cmap_colors(cmap_name),
+            vmin=vmin, vmax=vmax,
+            caption=name,
+        )
+
+        layer = folium.FeatureGroup(name=name, show=show)
+        for _, row in gdf.iterrows():
+            val = row.get(col)
+            if val is None or (hasattr(val, "__class__") and val.__class__.__name__ == "float" and np.isnan(val)):
+                continue
+            color = colormap(float(val))
+            folium.GeoJson(
+                row["geometry"].__geo_interface__,
+                style_function=lambda _, c=color: {
+                    "fillColor": c, "color": "gray",
+                    "weight": 0.3, "fillOpacity": 0.75,
+                },
+                tooltip=f"{name}: {float(val):.1f}",
+            ).add_to(layer)
+        layer.add_to(m)
+        colormap.add_to(m)
+
+    _add_layer("PCI",          "Blues",   "People Connectivity Index (PCI)",  show=True)
+    _add_layer("BCI",          "Reds",    "Business Connectivity Index (BCI)", show=False)
+    _add_layer("pci_bci_diff", "RdBu",    "Difference (PCI − BCI)",           show=False)
 
     folium.LayerControl(collapsed=False).add_to(m)
     return m
+
+
+def _cmap_colors(name: str):
+    """Return a small list of hex colours for a named diverging/sequential colormap."""
+    _palettes = {
+        "Blues": ["#deebf7", "#9ecae1", "#3182bd"],
+        "Reds":  ["#fee0d2", "#fc9272", "#de2d26"],
+        "RdBu":  ["#d73027", "#f7f7f7", "#4575b4"],
+    }
+    return _palettes.get(name, ["#f7fbff", "#2171b5"])
