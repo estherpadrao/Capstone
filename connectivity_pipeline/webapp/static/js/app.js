@@ -901,26 +901,21 @@ async function loadNetworkMap() {
   hint.textContent = 'Loading network map…';
   setStatus('Loading network map…', 'running');
 
-  try {
-    /* Prefer JSON map payload first so this always issues a visible API request
-       and surfaces backend errors directly in the UI. */
-    const r = await fetch('/api/scenario/network_map?t=' + Date.now());
-    const payload = await r.json();
-    if (!r.ok || payload.status !== 'ok' || !payload.map_html) {
-      throw new Error(payload.message || `HTTP ${r.status}`);
-    }
-
-    frame.srcdoc = payload.map_html;
+  /* Use direct iframe navigation for Folium maps.
+     Folium's generated HTML/JS behaves most reliably as a full page. */
+  frame.onload = function () {
     frame.classList.remove('hidden');
     hint.textContent = 'Click any hex or drive edge to add it to the target selection.';
     setStatus('✓ Network map loaded', 'ok');
-  } catch (e) {
-    console.error(e);
+    btn.disabled = false;
+  };
+  frame.onerror = function () {
     hint.textContent = 'Error loading network map — run PCI or BCI first, then retry.';
-    setStatus('Network map error: ' + e.message, 'err');
-  }
+    setStatus('Network map error', 'err');
+    btn.disabled = false;
+  };
 
-  btn.disabled = false;
+  frame.src = '/api/scenario/network_map_view?t=' + Date.now();
 }
 
 // ── Run scenario ───────────────────────────────────────────────────────────
