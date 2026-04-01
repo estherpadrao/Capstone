@@ -11,6 +11,7 @@ import geopandas as gpd
 from scipy import ndimage
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+from shapely.ops import unary_union
 
 from core.h3_helper import HexGrid
 
@@ -137,6 +138,26 @@ class MassCalculator:
             # This correctly splits a park that spans multiple hexagons — each hex
             # gets only the area that actually falls within it.
             features_m = features.to_crs(epsg=3857)
+            features_m = features_m[features_m.geometry.notna() & ~features_m.geometry.is_empty].copy()
+            features_m["geometry"] = features_m.geometry.make_valid()
+
+            def _to_polygonal(geom):
+                if geom is None or geom.is_empty:
+                    return None
+                if geom.geom_type in {"Polygon", "MultiPolygon"}:
+                    return geom
+                if geom.geom_type == "GeometryCollection":
+                    polys = [
+                        g for g in geom.geoms
+                        if g.geom_type in {"Polygon", "MultiPolygon"} and not g.is_empty
+                    ]
+                    if not polys:
+                        return None
+                    return unary_union(polys)
+                return None
+
+            features_m["geometry"] = features_m.geometry.apply(_to_polygonal)
+            features_m = features_m[features_m.geometry.notna() & ~features_m.geometry.is_empty].copy()
             hex_m      = hex_gdf.to_crs(epsg=3857)
             try:
                 clipped = gpd.overlay(
