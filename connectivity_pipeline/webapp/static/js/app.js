@@ -893,7 +893,7 @@ function _updateAmenityCountLabel() {
 
 // ── Load network map ───────────────────────────────────────────────────────
 
-function loadNetworkMap() {
+async function loadNetworkMap() {
   const btn   = document.getElementById('btn-load-netmap');
   const frame = document.getElementById('sc-net-map');
   const hint  = document.getElementById('netmap-hint');
@@ -901,23 +901,21 @@ function loadNetworkMap() {
   hint.textContent = 'Loading network map…';
   setStatus('Loading network map…', 'running');
 
+  /* Use direct iframe navigation for Folium maps.
+     Folium's generated HTML/JS behaves most reliably as a full page. */
   frame.onload = function () {
+    frame.classList.remove('hidden');
     hint.textContent = 'Click any hex or drive edge to add it to the target selection.';
     setStatus('✓ Network map loaded', 'ok');
     btn.disabled = false;
   };
   frame.onerror = function () {
-    hint.textContent = 'Error loading network map — check that PCI or BCI has been run.';
+    hint.textContent = 'Error loading network map — run PCI or BCI first, then retry.';
     setStatus('Network map error', 'err');
     btn.disabled = false;
   };
 
-  /* Load as a proper same-origin page so window.parent.scAddHex() works
-     without any cross-origin restriction.
-     Append a timestamp to bust the browser's iframe src cache so that
-     clicking the button a second time always triggers a fresh onload. */
   frame.src = '/api/scenario/network_map_view?t=' + Date.now();
-  frame.classList.remove('hidden');
 }
 
 // ── Run scenario ───────────────────────────────────────────────────────────
