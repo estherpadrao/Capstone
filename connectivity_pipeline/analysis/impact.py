@@ -249,7 +249,9 @@ def _add_network_edges(m: folium.Map, net):
     """
     MODE_STYLES = {
         #  mode       colour      shown   max_edges
-        "drive": ("#BF360C", True, 15_000),   # deep red — connected road network
+        "walk":    ("#455A64", False, 30_000),
+        "transit": ("#1976D2", True,  20_000),
+        "drive":   ("#BF360C", True,  15_000),
     }
 
     for mode, (color, show, max_edges) in MODE_STYLES.items():
@@ -861,13 +863,14 @@ def _build_result(
     city_name:      str,
 ) -> dict:
     delta = (modified - baseline).reindex(baseline.index)
+    delta_map = make_delta_map(grid.gdf, delta, baseline, modified, city_name)
     return {
         "stats":          compute_impact_stats(baseline, modified),
-        "delta_map_html": make_delta_map(
-            grid.gdf, delta, baseline, modified, city_name
-        )._repr_html_(),
-        "top_hexes":  top_affected_hexes(grid.gdf, delta),
-        "n_affected": len(affected_hexes),
+        # srcdoc expects a complete HTML document; _repr_html_ returns a
+        # notebook iframe wrapper which can fail to render in nested iframes.
+        "delta_map_html": delta_map.get_root().render(),
+        "top_hexes":      top_affected_hexes(grid.gdf, delta),
+        "n_affected":     len(affected_hexes),
     }
 
 
