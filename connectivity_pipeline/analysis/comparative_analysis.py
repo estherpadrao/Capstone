@@ -355,4 +355,19 @@ def make_comparison_map(grid: HexGrid) -> folium.Map:
         folium.Choropleth(
             geo_data=gdf.to_json(),
             data=gdf,
-            colum
+            columns=["hex_id", col],
+            key_on="feature.properties.hex_id",
+            fill_color=colors,
+            fill_opacity=0.7,
+            line_opacity=0.2,
+            legend_name=name,
+            name=name,
+            show=show,
+        ).add_to(m)
+
+    _add_choropleth("PCI",          "Blues",  "People Connectivity Index (PCI)",  show=True)
+    _add_choropleth("BCI",          "Reds",   "Business Connectivity Index (BCI)", show=False)
+    _add_choropleth("pci_bci_diff", "RdBu",   "Difference (PCI − BCI)",           show=False)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+    return m
