@@ -1145,7 +1145,9 @@ def scenario_network_map_view():
     window.parent.scReceiveEdge() reliable without cross-origin guards.
     """
     s = get_state(sid())
+    print("   📍 scenario_network_map_view: request received")
     if "grid" not in s:
+        print("   ⚠  scenario_network_map_view: no grid in session")
         return Response(
             "<html><body style='font-family:sans-serif;padding:24px'>"
             "No grid in session — run PCI or BCI first.</body></html>",
@@ -1155,7 +1157,7 @@ def scenario_network_map_view():
         cached_html = s.get("network_map_html")
         # Legacy check: old cache used _repr_html_() which embeds an <iframe>.
         if not cached_html or "<iframe" in cached_html:
-            # Fallback: build on demand (e.g. after restore without re-running compute).
+            print("   🔨 scenario_network_map_view: no cache — building on demand")
             _prebuild_network_map(s)
 
         if not s.get("network_map_html"):
