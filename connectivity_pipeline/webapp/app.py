@@ -84,6 +84,10 @@ from analysis.isochrones import (
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.secret_key = os.environ.get("FLASK_SECRET", "connectivity-pipeline-secret-key")
 
+# Disable static-file caching so browsers always fetch the latest JS/CSS.
+# Without this, browsers cache app.js and run stale code after updates.
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
 # In-memory state store (use Redis for production)
 STATE: dict = {}
 

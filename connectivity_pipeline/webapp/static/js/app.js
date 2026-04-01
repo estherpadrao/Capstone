@@ -911,14 +911,6 @@ async function loadNetworkMap() {
     btn.disabled = false;
   };
 
-  frame.onload = function () {
-    frame.classList.remove('hidden');
-    finish(true, 'Click any hex or drive edge to add it to the target selection.');
-  };
-  frame.onerror = function () {
-    finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
-  };
-
   try {
     // Preflight: triggers map computation+caching on the backend but only
     // returns a small JSON response (not the full HTML), so this await is
@@ -927,8 +919,18 @@ async function loadNetworkMap() {
     const preflight = await fetch('/api/scenario/network_map_view?t=' + token + '&probe=1', { cache: 'no-store' });
     if (!preflight.ok) throw new Error(`HTTP ${preflight.status}`);
 
-    // Map is now cached — set iframe src and start the failsafe timer from here.
-    frame.src = '/api/scenario/network_map_view?t=' + token;
+    // Map is now cached on the backend.  Register onload AFTER the probe so
+    // it is never accidentally triggered by the frame's initial empty state.
+    const mapUrl = '/api/scenario/network_map_view?t=' + token;
+    frame.onload = function () {
+      frame.classList.remove('hidden');
+      finish(true, 'Click any hex or drive edge to add it to the target selection.');
+    };
+    frame.onerror = function () {
+      finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
+    };
+
+    frame.src = mapUrl;
     hint.textContent = 'Rendering map in browser…';
 
     // Failsafe: avoid indefinite "loading..." if the iframe event never fires.
