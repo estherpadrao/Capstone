@@ -901,21 +901,38 @@ async function loadNetworkMap() {
   hint.textContent = 'Loading network map…';
   setStatus('Loading network map…', 'running');
 
-  /* Use direct iframe navigation for Folium maps.
-     Folium's generated HTML/JS behaves most reliably as a full page. */
-  frame.onload = function () {
-    frame.classList.remove('hidden');
-    hint.textContent = 'Click any hex or drive edge to add it to the target selection.';
-    setStatus('✓ Network map loaded', 'ok');
-    btn.disabled = false;
-  };
-  frame.onerror = function () {
-    hint.textContent = 'Error loading network map — run PCI or BCI first, then retry.';
-    setStatus('Network map error', 'err');
+  const token = Date.now();
+  let done = false;
+  const finish = (ok, msg) => {
+    if (done) return;
+    done = true;
+    if (msg) hint.textContent = msg;
+    setStatus(ok ? '✓ Network map loaded' : 'Network map error', ok ? 'ok' : 'err');
     btn.disabled = false;
   };
 
-  frame.src = '/api/scenario/network_map_view?t=' + Date.now();
+  frame.onload = function () {
+    frame.classList.remove('hidden');
+    finish(true, 'Click any hex or drive edge to add it to the target selection.');
+  };
+  frame.onerror = function () {
+    finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
+  };
+
+  // Failsafe: avoid indefinite "loading..." if the iframe event never fires.
+  setTimeout(() => {
+    finish(false, 'Map still loading — please retry. If needed, run PCI/BCI first.');
+  }, 15000);
+
+  try {
+    // Explicit preflight request so backend/API activity is always visible.
+    const preflight = await fetch('/api/scenario/network_map_view?t=' + token + '&probe=1', { cache: 'no-store' });
+    if (!preflight.ok) throw new Error(`HTTP ${preflight.status}`);
+    frame.src = '/api/scenario/network_map_view?t=' + token;
+  } catch (e) {
+    console.error(e);
+    finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
+  }
 }
 
 // ── Run scenario ───────────────────────────────────────────────────────────
