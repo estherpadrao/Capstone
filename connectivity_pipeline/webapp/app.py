@@ -1082,7 +1082,7 @@ def scenario_network_map():
             bci       = s.get("bci"),
             city_name = s.get("city_name", ""),
         )
-        return jsonify({"status": "ok", "map_html": m._repr_html_()})
+        return jsonify({"status": "ok", "map_html": m.get_root().render()})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -1112,7 +1112,9 @@ def scenario_network_map_view():
                 bci       = s.get("bci"),
                 city_name = s.get("city_name", ""),
             )
-            s["network_map_html"] = m._repr_html_()
+            # Serve full Folium HTML document (not notebook iframe wrapper),
+            # so the scenario iframe can render and attach click handlers.
+            s["network_map_html"] = m.get_root().render()
             print("   🗺  Network map rendered and cached in session")
         else:
             print("   ♻  Reusing cached network map")
