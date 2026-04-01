@@ -897,19 +897,30 @@ function loadNetworkMap() {
   const btn   = document.getElementById('btn-load-netmap');
   const frame = document.getElementById('sc-net-map');
   const hint  = document.getElementById('netmap-hint');
-  btn.disabled = true;
-  hint.textContent = 'Loading network map…';
+
+  if (!frame) {
+    console.error('[loadNetworkMap] iframe #sc-net-map not found in DOM');
+    setStatus('Network map error: iframe element missing', 'err');
+    if (btn) btn.disabled = false;
+    return;
+  }
+  if (!btn) {
+    console.error('[loadNetworkMap] button #btn-load-netmap not found in DOM');
+  }
+
+  if (btn) btn.disabled = true;
+  if (hint) hint.textContent = 'Loading network map…';
   setStatus('Loading network map…', 'running');
 
   frame.onload = function () {
-    hint.textContent = 'Click any hex or drive edge to add it to the target selection.';
+    if (hint) hint.textContent = 'Click any hex or drive edge to add it to the target selection.';
     setStatus('✓ Network map loaded', 'ok');
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   };
   frame.onerror = function () {
-    hint.textContent = 'Error loading network map — check that PCI or BCI has been run.';
+    if (hint) hint.textContent = 'Error loading network map — check that PCI or BCI has been run.';
     setStatus('Network map error', 'err');
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   };
 
   /* Load as a proper same-origin page so window.parent.scAddHex() works
