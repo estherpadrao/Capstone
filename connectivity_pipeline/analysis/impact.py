@@ -247,8 +247,6 @@ def _add_network_edges(m: folium.Map, net):
     Walk is togglable via the legend but hidden initially to reduce clutter.
     Edge caps are per-mode to reflect typical network sizes.
     """
-    from shapely.geometry import mapping, LineString
-
     MODE_STYLES = {
         #  mode       colour      shown   max_edges
         "drive": ("#BF360C", True, 15_000),   # deep red — connected road network
@@ -265,16 +263,21 @@ def _add_network_edges(m: folium.Map, net):
             edges = rng.sample(edges, max_edges)
 
         features = []
+        nodes = G.nodes  # single dict lookup, reused across iterations
         for u, v, data in edges:
             try:
-                uy, ux = G.nodes[u].get("y", 0), G.nodes[u].get("x", 0)
-                vy, vx = G.nodes[v].get("y", 0), G.nodes[v].get("x", 0)
+                nu = nodes[u]
+                nv = nodes[v]
+                ux, uy = nu.get("x", 0), nu.get("y", 0)
+                vx, vy = nv.get("x", 0), nv.get("y", 0)
                 if not (ux or uy) or not (vx or vy):
                     continue
                 t = round(data.get("time_min", 0.0), 2)
                 features.append({
                     "type": "Feature",
-                    "geometry": mapping(LineString([(ux, uy), (vx, vy)])),
+                    # Direct dict avoids Shapely object construction overhead
+                    "geometry": {"type": "LineString",
+                                 "coordinates": [[ux, uy], [vx, vy]]},
                     "properties": {
                         "mode": mode, "time_min": t,
                         "u": str(u), "v": str(v),
@@ -288,15 +291,14 @@ def _add_network_edges(m: folium.Map, net):
 
         fc    = {"type": "FeatureCollection", "features": features}
         layer = folium.FeatureGroup(name=f"{mode.title()} Network", show=show)
+        # No GeoJsonTooltip: attaching hover handlers to 15k features is the
+        # primary cause of slow browser-side map parsing.  Edge u/v/time_min
+        # are still in properties and available to click handlers.
         folium.GeoJson(
             fc,
             style_function=lambda feat, c=color: {
                 "color": c, "weight": 2.2, "opacity": 0.75,
             },
-            tooltip=folium.GeoJsonTooltip(
-                fields=["mode", "u", "v", "time_min"],
-                aliases=["Mode:", "From:", "To:", "Time (min):"],
-            ),
         ).add_to(layer)
         layer.add_to(m)
 

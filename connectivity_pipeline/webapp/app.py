@@ -1110,6 +1110,13 @@ def scenario_network_map_view():
             print("   🗺  Network map rendered and cached in session")
         else:
             print("   ♻  Reusing cached network map")
+
+        # probe=1: lightweight readiness check — compute+cache above, then
+        # return a small JSON response so the JS preflight doesn't download
+        # the full HTML twice (the iframe src= will fetch it separately).
+        if request.args.get("probe") == "1":
+            return Response('{"status":"ok"}', status=200, mimetype="application/json")
+
         return Response(s["network_map_html"], status=200, mimetype="text/html")
     except Exception as e:
         traceback.print_exc()

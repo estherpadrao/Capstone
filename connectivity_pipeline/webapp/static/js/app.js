@@ -919,16 +919,24 @@ async function loadNetworkMap() {
     finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
   };
 
-  // Failsafe: avoid indefinite "loading..." if the iframe event never fires.
-  setTimeout(() => {
-    finish(false, 'Map still loading — please retry. If needed, run PCI/BCI first.');
-  }, 15000);
-
   try {
-    // Explicit preflight request so backend/API activity is always visible.
+    // Preflight: triggers map computation+caching on the backend but only
+    // returns a small JSON response (not the full HTML), so this await is
+    // fast once the backend finishes computing.
+    hint.textContent = 'Building network map (this may take 20–60 s for large cities)…';
     const preflight = await fetch('/api/scenario/network_map_view?t=' + token + '&probe=1', { cache: 'no-store' });
     if (!preflight.ok) throw new Error(`HTTP ${preflight.status}`);
+
+    // Map is now cached — set iframe src and start the failsafe timer from here.
     frame.src = '/api/scenario/network_map_view?t=' + token;
+    hint.textContent = 'Rendering map in browser…';
+
+    // Failsafe: avoid indefinite "loading..." if the iframe event never fires.
+    // Timer starts after frame.src is set (map is already cached, so this is
+    // purely browser-side parse/render time).
+    setTimeout(() => {
+      finish(false, 'Map still loading — please retry. If needed, run PCI/BCI first.');
+    }, 90000);
   } catch (e) {
     console.error(e);
     finish(false, 'Error loading network map — run PCI or BCI first, then retry.');
