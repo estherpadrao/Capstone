@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Connectivity Pipeline</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/index.css') }}" />
 </head>
@@ -23,13 +25,14 @@
   <main class="main" style="padding-bottom:48px">
 
     <div class="tabs">
-      <button class="tab active" data-tab="pci" onclick="showTab('pci')">PCI</button>
+      <button class="tab active" data-tab="about" onclick="showTab('about')">About</button>
+      <button class="tab" data-tab="pci" onclick="showTab('pci')">PCI</button>
       <button class="tab" data-tab="bci" onclick="showTab('bci')">BCI</button>
       <button class="tab" data-tab="compare" onclick="showTab('compare')">Compare</button>
       <button class="tab" data-tab="diagnostics" onclick="showTab('diagnostics')">Diagnostics</button>
       <button class="tab" data-tab="sensitivity" onclick="showTab('sensitivity')">Sensitivity</button>
       <button class="tab" data-tab="scenario" onclick="showTab('scenario')">Scenario Testing</button>
-      <button class="tab" data-tab="about" onclick="showTab('about')">About</button>
+      <button class="tab" data-tab="hidden_trends" onclick="showTab('hidden_trends')">Hidden Trends</button>
     </div>
 
     {% include 'partials/tab_pci.html' %}
@@ -39,6 +42,7 @@
     {% include 'partials/tab_diagnostics.html' %}
     {% include 'partials/tab_scenario.html' %}
     {% include 'partials/tab_about.html' %}
+    {% include 'partials/tab_hidden_trends.html' %}
 
   </main>
 </div>

@@ -2,7 +2,7 @@
    STATE
    ========================================================= */
 let _hasPCI = false, _hasBCI = false;
-let _activeTab = 'pci';
+let _activeTab = 'about';
 
 /* On page load, ask the server which results are already in session.
    This restores _hasPCI / _hasBCI after a browser refresh without
@@ -12,7 +12,8 @@ let _activeTab = 'pci';
     const r = await get('/api/session/status');
     if (r.has_pci) _hasPCI = true;
     if (r.has_bci) _hasBCI = true;
-    if (_hasPCI && _hasBCI) checkCompare();
+    // Do NOT auto-load compare here — PCI/BCI tabs are not yet populated.
+    // Compare only loads when the user actually runs or restores results.
   } catch (e) { /* server not ready yet */ }
 })();
 
@@ -62,7 +63,7 @@ function setStatus(msg, state) {
 
 function showTab(name) {
   _activeTab = name;
-  ['pci','bci','compare','diagnostics','sensitivity','about','scenario'].forEach(t => {
+  ['pci','bci','compare','diagnostics','sensitivity','about','scenario','hidden_trends'].forEach(t => {
     document.getElementById('tab-' + t).classList.toggle('hidden', t !== name);
   });
   document.querySelectorAll('.tab').forEach(btn => {
@@ -71,6 +72,7 @@ function showTab(name) {
     btn.classList.toggle('active', tabName === name);
   });
   if (name === 'about') loadAbout();
+  if (name === 'hidden_trends') htSyncScenarioOptions();
 }
 
 function getUserParams() {
@@ -129,7 +131,9 @@ function setMapSrc(frameId, html) {
 
 function setImg(id, b64) {
   if (!b64) return;
-  document.getElementById(id).src = 'data:image/png;base64,' + b64;
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.src = 'data:image/png;base64,' + b64;
 }
 
 function renderStats(containerId, stats, keyMap) {
@@ -153,8 +157,7 @@ const PCI_STAT_MAP = {
 };
 const BCI_STAT_MAP = {
   mean: 'Mean BCI', median: 'Median', std: 'Std Dev',
-  n_hexagons: 'Hexagons', n_hotspots: 'Hotspots',
-  n_underserved: 'Underserved', cv_pct: 'CV %',
+  n_hexagons: 'Hexagons', cv_pct: 'CV %',
   corr_market_bci: 'r(Market)', corr_labour_bci: 'r(Labour)',
   corr_supplier_bci: 'r(Supplier)'
 };
@@ -384,6 +387,7 @@ async function runCompare() {
 }
 
 async function loadCompare() {
+  document.getElementById('compare-error-msg').textContent = '';
   try {
     setStatus('Loading comparative analysis…', 'running');
     const r = await get('/api/compare/visualize');
@@ -420,7 +424,7 @@ async function runNetworkDiag() {
     // ── Per-mode table ──
     let html = '<p style="color:var(--muted);font-size:.78rem;font-weight:600;margin-bottom:6px">PER-MODE NETWORKS</p>';
     html += '<table style="margin-bottom:16px"><thead><tr>'
-          + '<th>Mode</th><th>Nodes</th><th>Edges</th><th>Connected</th><th>Components</th><th>Largest component</th>'
+          + '<th>Mode</th><th>Nodes</th><th>Edges</th><th>Connected</th><th>Components</th><th>Largest connected component</th>'
           + '</tr></thead><tbody>';
     Object.entries(modeStats).forEach(([mode, s]) => {
       const connIcon = s.connected ? '✅' : '⚠';
@@ -430,7 +434,7 @@ async function runNetworkDiag() {
         <td>${s.edges.toLocaleString()}</td>
         <td>${connIcon}</td>
         <td>${s.n_components}</td>
-        <td>${s.largest_component.toLocaleString()}</td>
+        <td>${s.largest_component.toLocaleString()} nodes</td>
       </tr>`;
     });
     html += '</tbody></table>';
@@ -444,7 +448,7 @@ async function runNetworkDiag() {
       ['Edges',            (unified.edges||0).toLocaleString()],
       ['Connected',        unified.connected ? '✅ Yes' : '⚠ No'],
       ['Components',       unified.n_components],
-      ['Largest component',(unified.largest_component||0).toLocaleString()],
+      ['Largest connected component', (unified.largest_component||0).toLocaleString() + ' nodes'],
       ['Travel time mean', (unified.time_min_mean||0).toFixed(2) + ' min'],
       ['Travel time max',  (unified.time_min_max||0).toFixed(2) + ' min'],
     ];
@@ -658,18 +662,56 @@ async function restoreResults() {
 
 // ── Sensitivity Analysis ──
 
+const _sensData  = {};   // { 'pci': {tornado_png, table_html}, 'bci': {...} }
+const _sensOrder = [];   // ['pci','bci'] — index 0 = top of stack
+
+function _renderSensStack() {
+  const stack = document.getElementById('sens-results-stack');
+  stack.innerHTML = '';
+  _sensOrder.forEach(m => {
+    const d = _sensData[m];
+    const label = m.toUpperCase();
+    const colorClass = m === 'pci' ? 'sens-block-pci' : 'sens-block-bci';
+    const block = document.createElement('div');
+    block.id = `sens-block-${m}`;
+    block.className = `card ${colorClass}`;
+    block.style.marginBottom = '0';
+    block.innerHTML = `
+      <div class="card-title" style="font-size:.9rem;text-transform:uppercase;letter-spacing:.06em">
+        ${label} Sensitivity
+      </div>
+      <div class="card-title" style="font-size:.85rem;font-weight:400;margin-top:8px">Tornado Chart</div>
+      <img src="data:image/png;base64,${d.tornado_png}"
+           style="max-width:100%;border-radius:8px;margin-bottom:20px" />
+      <div class="card-title" style="font-size:.85rem;font-weight:400;margin-bottom:6px">Score Changes by Parameter</div>
+      <p style="color:var(--muted);font-size:.78rem;margin-bottom:10px">
+        Cells show change from baseline. Green = score improves, red = score drops, dash = negligible change.
+      </p>
+      <div style="overflow-x:auto">${d.table_html}</div>`;
+    stack.appendChild(block);
+  });
+}
+
 async function runSensitivity(model) {
   const statusEl = document.getElementById('sens-status');
   statusEl.textContent = `Running ${model.toUpperCase()} sensitivity analysis…`;
-  document.getElementById('sens-tornado').classList.add('hidden');
-  document.getElementById('sens-table').classList.add('hidden');
   try {
     const r = await post(`/api/sensitivity/${model}`, {});
     if (r.error) { statusEl.textContent = 'Error: ' + r.error; return; }
-    document.getElementById('sens-tornado-img').src = 'data:image/png;base64,' + r.tornado_png;
-    document.getElementById('sens-tornado').classList.remove('hidden');
-    document.getElementById('sens-table-content').innerHTML = r.table_html;
-    document.getElementById('sens-table').classList.remove('hidden');
+
+    _sensData[model] = { tornado_png: r.tornado_png, table_html: r.table_html };
+
+    // Move to top if not already there; add to top if new
+    const idx = _sensOrder.indexOf(model);
+    if (idx > 0) {
+      _sensOrder.splice(idx, 1);
+      _sensOrder.unshift(model);
+    } else if (idx === -1) {
+      _sensOrder.unshift(model);
+    }
+    // idx === 0 → already at top, data updated above, re-render in place
+
+    _renderSensStack();
     statusEl.textContent = `${model.toUpperCase()} sensitivity complete.`;
   } catch(e) {
     const msg = (e.message.includes('Unexpected token') || e.message.includes('not valid JSON'))
@@ -684,21 +726,22 @@ async function runSensitivity(model) {
    ========================================================= */
 
 // Internal state
-let _scHexes     = [];   // H3 hex IDs selected by hex click or text input
-let _scEdgeNodes = [];   // Edge node pairs selected by edge click: [{u,v,mode,time_min}]
+let _scHexes       = [];   // H3 hex IDs selected by hex click or text input
+let _scEdgeNodes   = [];   // Edge node pairs added to target: [{u,v,mode,time_min}]
+let _scActiveIndex = null; // 'pci' | 'bci' — set when a map is loaded
+let _scHexScores   = [];   // [{hex_id, score}] for the picker table
+let _scLastEdge    = null; // Last edge clicked on map or in table (not yet committed)
 
-// ── Functions exposed to the map iframe (same-origin direct call) ──────────
-
-/* Called directly by the folium iframe on hex click */
 function scAddHex(hex_id) {
   if (!hex_id || _scHexes.includes(hex_id)) return;
   _scHexes.push(hex_id);
   _scRenderChips();
 }
 
-/* Called directly by the folium iframe on edge click */
+/* Update the "Last Clicked Edge" info panel and store for later commit.
+   Does NOT add to target chips — call scCommitLastEdge() for that. */
 function scReceiveEdge(data) {
-  // Update edge info panel
+  _scLastEdge = data;
   const panel = document.getElementById('sc-edge-info');
   if (panel) {
     document.getElementById('sc-edge-mode').textContent = data.mode || '—';
@@ -708,15 +751,33 @@ function scReceiveEdge(data) {
     document.getElementById('sc-edge-v').textContent = data.v || '—';
     panel.classList.remove('hidden');
   }
-  // Add as edge chip (dedup by u|v key)
-  const key = `${data.u}|${data.v}`;
-  if (!_scEdgeNodes.find(e => `${e.u}|${e.v}` === key)) {
-    _scEdgeNodes.push({ u: data.u, v: data.v, mode: data.mode || '', time_min: data.time_min });
-    _scRenderChips();
-  }
 }
 
-// ── postMessage fallback (in case direct call is unavailable) ────────────────
+/* Add the last clicked edge to the target chips (dedup). */
+function scCommitLastEdge() {
+  scCommitEdge(_scLastEdge);
+}
+
+/* Add an edge object directly to target chips (dedup). Used by table rows. */
+function scCommitEdge(data) {
+  if (!data || !data.u || !data.v) return;
+  const key = `${data.u}|${data.v}`;
+  if (_scEdgeNodes.find(e => `${e.u}|${e.v}` === key)) return;
+  _scEdgeNodes.push({ u: data.u, v: data.v, mode: data.mode || 'drive', time_min: data.time_min });
+  _scRenderChips();
+}
+
+// ── localStorage channel (primary: fires reliably from same-origin iframes) ──
+window.addEventListener('storage', function (evt) {
+  if (evt.key === '_sc_hex_click' && evt.newValue) {
+    try { scAddHex(JSON.parse(evt.newValue).hex_id); } catch (e) {}
+  }
+  if (evt.key === '_sc_edge_click' && evt.newValue) {
+    try { scReceiveEdge(JSON.parse(evt.newValue)); } catch (e) {}
+  }
+});
+
+// ── postMessage fallback ─────────────────────────────────────────────────────
 window.addEventListener('message', function (evt) {
   const d = evt.data;
   if (!d || typeof d !== 'object') return;
@@ -772,6 +833,15 @@ function _scRenderChips() {
      </span>`
   );
   container.innerHTML = [...hexChips, ...edgeChips].join('');
+  // Refresh picker highlights
+  if (_scHexScores.length) {
+    const q = document.getElementById('sc-picker-filter')?.value || '';
+    if (q.trim()) scFilterHexPicker(); else _scRenderPickerRows(_scHexScores);
+  }
+  if (_scEdgeRows.length) {
+    const q = document.getElementById('sc-edge-filter')?.value || '';
+    if (q.trim()) scFilterEdgePicker(); else _scRenderEdgeRows(_scEdgeRows);
+  }
 }
 
 // ── Show / hide parameter rows based on scenario type ─────────────────────
@@ -801,88 +871,304 @@ function onScTypeChange() {
   }
   if (type === 'amenity_add') {
     amenityAddRow.classList.remove('hidden');
-    loadAmenityTypes();
   }
   if (type === 'supplier_add') {
     supplierAddRow.classList.remove('hidden');
   }
 }
 
-async function loadAmenityTypes() {
-  const sel = document.getElementById('sc-amenity-type');
-  if (!sel) return;
-  sel.innerHTML = '<option value="">Loading…</option>';
-  try {
-    const r = await get('/api/scenario/amenity_types');
-    if (r.status !== 'ok') throw new Error(r.message);
-    sel.innerHTML = r.types.map(t =>
-      `<option value="${t.name}"
-               data-unit="${t.unit}"
-               data-raw-range="${t.raw_range}"
-               data-weight="${t.weight}">${t.label} — ${t.unit}</option>`
-    ).join('');
-    _updateAmenityCountLabel();
-  } catch (e) {
-    sel.innerHTML = '<option value="">Run PCI first</option>';
-  }
-}
-
 function _updateAmenityCountLabel() {
-  const sel = document.getElementById('sc-amenity-type');
-  if (!sel) return;
-  const opt  = sel.selectedOptions[0];
-  const unit = opt ? opt.getAttribute('data-unit') : 'units';
+  const UNITS = {
+    health: 'clinics / hospitals', education: 'schools / facilities',
+    parks: 'm² of park area', community: 'community centres',
+    food_retail: 'food / retail outlets', transit: 'transit stops',
+  };
+  const sel  = document.getElementById('sc-amenity-type');
   const lbl  = document.getElementById('sc-amenity-count-lbl');
-  if (lbl) lbl.textContent = `Count (${unit})`;
+  if (!sel || !lbl) return;
+  const unit = UNITS[sel.value] || 'units';
+  lbl.textContent = `Count (${unit})`;
 }
 
-// ── Load network map ───────────────────────────────────────────────────────
+// ── Native Leaflet network map (no iframe) ─────────────────────────────────
 
-function loadNetworkMap() {
-  const btn   = document.getElementById('btn-load-netmap');
-  const frame = document.getElementById('sc-net-map');
-  const hint  = document.getElementById('netmap-hint');
-  btn.disabled = true;
-  hint.textContent = 'Loading network map…';
-  setStatus('Loading network map…', 'running');
+let _scLeafletMap = null;  // current Leaflet map instance
 
-  frame.onload = function () {
-    hint.textContent = 'Click any hex or drive edge to add it to the target selection.';
-    setStatus('✓ Network map loaded', 'ok');
-    btn.disabled = false;
-  };
-  frame.onerror = function () {
-    hint.textContent = 'Error loading network map — check that PCI or BCI has been run.';
-    setStatus('Network map error', 'err');
-    btn.disabled = false;
-  };
+async function loadNetworkMap(indexType) {
+  const btnPci = document.getElementById('btn-load-pci-map');
+  const btnBci = document.getElementById('btn-load-bci-map');
+  const mapDiv = document.getElementById('sc-net-map');
+  const hint   = document.getElementById('netmap-hint');
 
-  /* Load as a proper same-origin page so window.parent.scAddHex() works
-     without any cross-origin restriction. */
-  frame.src = '/api/scenario/network_map_view';
-  frame.classList.remove('hidden');
+  btnPci.disabled = true;
+  btnBci.disabled = true;
+  hint.textContent = `Loading ${indexType.toUpperCase()} map…`;
+  setStatus(`Loading ${indexType.toUpperCase()} network map…`, 'running');
+
+  // Destroy previous map instance so Leaflet can re-initialise on the same div
+  if (_scLeafletMap) { _scLeafletMap.remove(); _scLeafletMap = null; }
+  mapDiv.classList.remove('hidden');
+
+  try {
+    const [hexResp, edgeResp] = await Promise.all([
+      fetch(`/api/scenario/hex_geojson?index=${indexType}`),
+      fetch('/api/scenario/edge_geojson'),
+    ]);
+    const hexGJ  = await hexResp.json();
+    const edgeGJ = await edgeResp.json();
+
+    // Centre map on hex layer bounds
+    const tmpLayer = L.geoJson(hexGJ);
+    const bounds   = tmpLayer.getBounds();
+    const center   = bounds.isValid() ? bounds.getCenter() : [0, 0];
+
+    _scLeafletMap = L.map(mapDiv, { zoomControl: true }).setView(center, 12);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '© CartoDB', maxZoom: 19,
+    }).addTo(_scLeafletMap);
+
+    // ── Hex layer ──────────────────────────────────────────────────────────
+    const scores  = hexGJ.features.map(f => f.properties._score).filter(v => v != null && !isNaN(v));
+    const scoreLo = scores.length ? Math.min(...scores) : 0;
+    const scoreHi = scores.length ? Math.max(...scores) : 1;
+
+    L.geoJson(hexGJ, {
+      style: function(feature) {
+        const v = feature.properties._score;
+        if (v == null || isNaN(v)) return {fillColor:'#555', fillOpacity:.25, weight:.5, color:'#444'};
+        return {fillColor: _scScoreColor(v, scoreLo, scoreHi),
+                fillOpacity: .55, weight: .8, color: '#333'};
+      },
+      onEachFeature: function(feature, layer) {
+        const hid = feature.properties.hex_id;
+        const sc  = feature.properties._score;
+        layer.bindTooltip(
+          `<b>${hid}</b><br>${indexType.toUpperCase()}: ${sc != null ? Number(sc).toFixed(3) : '—'}`,
+          {sticky: true});
+        layer.on('click', function() {
+          // Find matching row in picker table and trigger its click
+          const row = document.querySelector(
+            `#sc-picker-tbody tr[data-hex="${hid}"]`);
+          if (row) { row.click(); row.scrollIntoView({block:'nearest'}); }
+          else scAddHex(hid);
+        });
+      },
+    }).addTo(_scLeafletMap);
+
+    // ── Edge layer — two passes: thin visual + wide invisible hit-target ───────
+    // Visual layer: thin line, non-interactive so it never blocks the hit layer
+    L.geoJson(edgeGJ, {
+      style: {color:'#BF360C', weight:2, opacity:.7},
+      interactive: false,
+    }).addTo(_scLeafletMap);
+
+    // Hit-target layer: 10 px wide, fully transparent, captures all clicks
+    L.geoJson(edgeGJ, {
+      style: {color:'#000', weight:10, opacity:0},
+      onEachFeature: function(feature, layer) {
+        const p = feature.properties;
+        layer.bindTooltip(
+          `From: ${p.u}<br>To: ${p.v}<br>Time: ${p.time_min} min`,
+          {sticky: true});
+        layer.on('click', function(e) {
+          if (e.originalEvent) e.originalEvent.stopPropagation();
+          // Always call scReceiveEdge directly — no row.click() routing
+          scReceiveEdge({u: p.u, v: p.v, time_min: p.time_min, mode: 'drive'});
+          // Scroll picker row into view as a visual hint if it exists
+          const row = document.querySelector(
+            `#sc-edge-picker-tbody tr[data-u="${p.u}"][data-v="${p.v}"]`);
+          if (row) row.scrollIntoView({block:'nearest'});
+        });
+      },
+    }).addTo(_scLeafletMap);
+
+    _scActiveIndex = indexType;
+    hint.textContent =
+      `${indexType.toUpperCase()} map loaded — click a hex or edge to select it.`;
+    hint.style.color = '';
+    setStatus(`✓ ${indexType.toUpperCase()} network map loaded`, 'ok');
+    _loadHexPicker(indexType);
+  } catch (e) {
+    hint.textContent = `Error loading map — make sure ${indexType.toUpperCase()} has been run first.`;
+    hint.style.color = 'var(--text)';
+    mapDiv.classList.add('hidden');
+    setStatus('Network map error: ' + e.message, 'err');
+  }
+  btnPci.disabled = false;
+  btnBci.disabled = false;
+}
+
+function _scScoreColor(v, lo, hi) {
+  const stops = [
+    [0.00, [49,  54,  149]],
+    [0.25, [116, 173, 209]],
+    [0.50, [255, 255, 191]],
+    [0.75, [244, 109,  67]],
+    [1.00, [165,   0,  38]],
+  ];
+  const t = hi > lo ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0.5;
+  let i = 0;
+  while (i < stops.length - 2 && t > stops[i + 1][0]) i++;
+  const t0 = stops[i][0],     c0 = stops[i][1];
+  const t1 = stops[i + 1][0], c1 = stops[i + 1][1];
+  const f  = t1 > t0 ? (t - t0) / (t1 - t0) : 0;
+  const r  = Math.round(c0[0] + f * (c1[0] - c0[0]));
+  const g  = Math.round(c0[1] + f * (c1[1] - c0[1]));
+  const b  = Math.round(c0[2] + f * (c1[2] - c0[2]));
+  return `rgb(${r},${g},${b})`;
+}
+
+// ── Hex picker ─────────────────────────────────────────────────────────────
+
+async function _loadHexPicker(indexType) {
+  try {
+    const r = await get('/api/scenario/hex_list');
+    if (r.status !== 'ok') return;
+    _scHexScores = r.hexes;
+    _scRenderPickerRows(_scHexScores);
+    document.getElementById('sc-picker-panel').classList.remove('hidden');
+    document.getElementById('sc-picker-count').textContent =
+      `${_scHexScores.length} hex${_scHexScores.length !== 1 ? 'es' : ''}`;
+  } catch (e) { /* picker is optional — silently skip */ }
+  _loadEdgePicker();
+}
+
+// ── Edge picker ─────────────────────────────────────────────────────────────
+
+let _scEdgeRows = [];  // [{u, v, time_min}] for the edge picker table
+
+async function _loadEdgePicker() {
+  try {
+    const r = await get('/api/scenario/edge_list');
+    if (r.status !== 'ok') return;
+    _scEdgeRows = r.edges;
+    _scRenderEdgeRows(_scEdgeRows);
+    document.getElementById('sc-edge-picker-panel').classList.remove('hidden');
+    document.getElementById('sc-edge-picker-count').textContent =
+      `${_scEdgeRows.length} edge${_scEdgeRows.length !== 1 ? 's' : ''}`;
+  } catch (e) { /* silently skip */ }
+}
+
+function _scRenderEdgeRows(rows) {
+  const tbody = document.getElementById('sc-edge-picker-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = rows.map(e => {
+    const key      = `${e.u}|${e.v}`;
+    const sel      = !!_scEdgeNodes.find(x => `${x.u}|${x.v}` === key);
+    const rowStyle = sel ? 'background:#c07000;color:#fff;' : 'cursor:pointer;';
+    return `<tr style="${rowStyle}" data-u="${e.u}" data-v="${e.v}"
+                onclick="scCommitEdge({u:'${e.u}',v:'${e.v}',time_min:${e.time_min},mode:'drive'})"
+                title="${sel ? 'Already selected' : 'Click to select'}">
+      <td style="padding:3px 8px;font-family:monospace;font-size:.71rem">${e.u}</td>
+      <td style="padding:3px 8px;font-family:monospace;font-size:.71rem">${e.v}</td>
+      <td style="padding:3px 8px;text-align:right">${e.time_min.toFixed(3)}</td>
+      <td style="padding:3px 6px;text-align:center">
+        ${sel ? '<span style="font-size:.8rem">✓</span>' : ''}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function scFilterEdgePicker() {
+  const q = (document.getElementById('sc-edge-filter')?.value || '').trim().toLowerCase();
+  if (!q) {
+    _scRenderEdgeRows(_scEdgeRows);
+    document.getElementById('sc-edge-picker-count').textContent = `${_scEdgeRows.length} edges`;
+    return;
+  }
+  const numMatch = q.match(/^([><]=?|=)(\d+\.?\d*)$/);
+  let filtered;
+  if (numMatch) {
+    const op = numMatch[1], val = parseFloat(numMatch[2]);
+    filtered = _scEdgeRows.filter(e => {
+      if (op === '>')  return e.time_min >  val;
+      if (op === '>=') return e.time_min >= val;
+      if (op === '<')  return e.time_min <  val;
+      if (op === '<=') return e.time_min <= val;
+      if (op === '=')  return Math.abs(e.time_min - val) < 0.0005;
+      return false;
+    });
+  } else {
+    filtered = _scEdgeRows.filter(e =>
+      e.u.toLowerCase().includes(q) || e.v.toLowerCase().includes(q));
+  }
+  _scRenderEdgeRows(filtered);
+  document.getElementById('sc-edge-picker-count').textContent = `${filtered.length} edges`;
+}
+
+function _scRenderPickerRows(rows) {
+  const tbody = document.getElementById('sc-picker-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = rows.map(h => {
+    const sel      = _scHexes.includes(h.hex_id);
+    const score    = h.score != null ? Number(h.score).toFixed(3) : '—';
+    const rowStyle = sel ? 'background:var(--accent);color:#fff;' : 'cursor:pointer;';
+    return `<tr style="${rowStyle}" data-hex="${h.hex_id}"
+                onclick="scAddHex('${h.hex_id}')"
+                title="${sel ? 'Already selected' : 'Click to select'}">
+      <td style="padding:3px 8px;font-family:monospace;font-size:.71rem">${h.hex_id}</td>
+      <td style="padding:3px 8px;text-align:right">${score}</td>
+      <td style="padding:3px 6px;text-align:center">
+        ${sel ? '<span style="font-size:.8rem">✓</span>' : ''}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function scFilterHexPicker() {
+  const q = (document.getElementById('sc-picker-filter')?.value || '').trim().toLowerCase();
+  if (!q) {
+    _scRenderPickerRows(_scHexScores);
+    document.getElementById('sc-picker-count').textContent =
+      `${_scHexScores.length} hexes`;
+    return;
+  }
+  // Supports: ID substring, ">50", "<30", "=0.45"
+  let filtered;
+  const numMatch = q.match(/^([><]=?|=)(\d+\.?\d*)$/);
+  if (numMatch) {
+    const op  = numMatch[1];
+    const val = parseFloat(numMatch[2]);
+    filtered  = _scHexScores.filter(h => {
+      if (h.score == null) return false;
+      if (op === '>')  return h.score >  val;
+      if (op === '>=') return h.score >= val;
+      if (op === '<')  return h.score <  val;
+      if (op === '<=') return h.score <= val;
+      if (op === '=')  return Math.abs(h.score - val) < 0.0005;
+      return false;
+    });
+  } else {
+    filtered = _scHexScores.filter(h => h.hex_id.toLowerCase().includes(q));
+  }
+  _scRenderPickerRows(filtered);
+  document.getElementById('sc-picker-count').textContent = `${filtered.length} hexes`;
 }
 
 // ── Run scenario ───────────────────────────────────────────────────────────
 
-async function runScenario(indexType) {
-  const type   = document.getElementById('sc-type').value;
-  const radius = parseInt(document.getElementById('sc-radius').value)  || 0;
-  const factor = parseFloat(document.getElementById('sc-factor').value) || 2.0;
+async function runScenario() {
+  if (!_scActiveIndex) {
+    setStatus('Load a PCI or BCI map first.', 'err'); return;
+  }
+  const indexType = _scActiveIndex;
+  const type      = document.getElementById('sc-type').value;
+  const radius    = parseInt(document.getElementById('sc-radius').value)  || 0;
+  const factor    = parseFloat(document.getElementById('sc-factor').value) || 2.0;
 
   // Validate index compatibility
   // amenity_* → PCI only  |  supplier_* → BCI only  |  edge_* → both allowed
   const isPciOnly = type.startsWith('amenity_');
   const isBciOnly = type.startsWith('supplier_');
   if (isPciOnly && indexType === 'bci') {
-    setStatus('Amenity scenarios only apply to PCI.', 'err'); return;
+    setStatus('Amenity scenarios only apply to PCI — load the PCI map first.', 'err'); return;
   }
   if (isBciOnly && indexType === 'pci') {
-    setStatus('Supplier scenarios only apply to BCI.', 'err'); return;
+    setStatus('Supplier scenarios only apply to BCI — load the BCI map first.', 'err'); return;
   }
 
   if (_scHexes.length === 0 && _scEdgeNodes.length === 0) {
-    setStatus('Select at least one hex or edge on the map first.', 'err'); return;
+    setStatus('Select at least one hex or edge first.', 'err'); return;
   }
 
   const amenityType  = document.getElementById('sc-amenity-type')?.value  || 'education';
@@ -897,13 +1183,12 @@ async function runScenario(indexType) {
     amenity_type:  amenityType,
     amenity_count: amenityCount,
   };
-  const url     = indexType === 'pci' ? '/api/scenario/run_pci' : '/api/scenario/run_bci';
-  const btnId   = indexType === 'pci' ? 'btn-sc-pci' : 'btn-sc-bci';
-  const btn     = document.getElementById(btnId);
-  btn.disabled  = true;
+  const url = indexType === 'pci' ? '/api/scenario/run_pci' : '/api/scenario/run_bci';
+  const btn = document.getElementById('btn-sc-run');
+  btn.disabled = true;
 
   const label = type.replace(/_/g, ' ');
-  setStatus(`Running scenario: ${label}…`, 'running');
+  setStatus(`Running ${indexType.toUpperCase()} scenario: ${label}…`, 'running');
 
   try {
     const r = await post(url, body);
@@ -944,14 +1229,16 @@ function _scRenderResults(r, indexType, label) {
   renderStats('sc-stats-mod', s, {
     modified_mean: 'Mean Score',
   });
+  const pct   = s.change_threshold_pct ?? 1;
+  const tNote = `|Δ| > ${pct}% of hex baseline`;
   renderStats('sc-stats-delta', s, {
     mean_delta:   'Mean Δ',
     median_delta: 'Median Δ',
     max_gain:     'Max Gain',
     max_loss:     'Max Loss',
-    n_improved:   '# Improved',
-    n_degraded:   '# Degraded',
-    n_unchanged:  '# Unchanged',
+    n_improved:   `# Improved (${tNote})`,
+    n_degraded:   `# Degraded (${tNote})`,
+    n_unchanged:  `# Unchanged (${tNote})`,
     p10_delta:    'P10 Δ',
     p25_delta:    'P25 Δ',
     p75_delta:    'P75 Δ',
@@ -959,6 +1246,8 @@ function _scRenderResults(r, indexType, label) {
   });
 
   // Delta map
+  if (r.insight_plot) setImg('sc-insight-img', r.insight_plot);
+
   if (r.delta_map_html) {
     document.getElementById('sc-delta-map').srcdoc = r.delta_map_html;
   }
@@ -995,4 +1284,141 @@ function scReset() {
   document.getElementById('sc-type').value = 'amenity_remove';
   onScTypeChange();
   setStatus('Scenario reset.', 'ok');
+}
+
+// Load About content on page open (tab is visible by default)
+loadAbout();
+
+/* =========================================================
+   HIDDEN TRENDS — batch scenario analysis
+   ========================================================= */
+
+function htSyncScenarioOptions() {
+  const index    = document.getElementById('ht-index').value;
+  const selType  = document.getElementById('ht-scenario-type');
+  const scType   = selType.value;
+  const pciGrp   = document.getElementById('ht-pci-opts');
+  const bciGrp   = document.getElementById('ht-bci-opts');
+  const amenRow  = document.getElementById('ht-amenity-type-row');
+  const factRow  = document.getElementById('ht-factor-row');
+  const slowWarn = document.getElementById('ht-slow-warn');
+
+  // Show/hide index-specific fast-path groups.
+  // display:none on <optgroup> is ignored by Chrome/Safari, so we also
+  // disable the individual <option> elements inside the hidden group.
+  const pciOpts = Array.from(pciGrp.querySelectorAll('option'));
+  const bciOpts = Array.from(bciGrp.querySelectorAll('option'));
+  if (index === 'pci') {
+    pciGrp.style.display = '';
+    pciOpts.forEach(o => { o.disabled = false; });
+    bciGrp.style.display = 'none';
+    bciOpts.forEach(o => { o.disabled = true; });
+    if (['supplier_remove','supplier_add'].includes(scType))
+      selType.value = 'amenity_remove';
+  } else {
+    pciGrp.style.display = 'none';
+    pciOpts.forEach(o => { o.disabled = true; });
+    bciGrp.style.display = '';
+    bciOpts.forEach(o => { o.disabled = false; });
+    if (['amenity_remove','amenity_add'].includes(scType))
+      selType.value = 'supplier_remove';
+  }
+
+  const currentType = selType.value;
+  amenRow.style.display  = currentType === 'amenity_add'  ? '' : 'none';
+  factRow.style.display  = currentType === 'edge_penalty' ? '' : 'none';
+  const isNetwork = ['edge_penalty','edge_remove'].includes(currentType);
+  slowWarn.classList.toggle('hidden', !isNetwork);
+
+  // For network scenarios, runs-per-band and radius are fixed (1 run, radius 0
+  // only) — disable and grey out those controls so they can't be changed.
+  const nBandEl   = document.getElementById('ht-n-per-band');
+  const radiusRow = document.getElementById('ht-radius-row');
+  const r0cb      = document.getElementById('ht-radius-0');
+  const r1cb      = document.getElementById('ht-radius-1');
+  const muted     = 'var(--muted)';
+  const text      = '';
+
+  if (isNetwork) {
+    if (nBandEl)   { nBandEl.value = 1; nBandEl.disabled = true;
+                     nBandEl.style.opacity = '0.4'; nBandEl.style.cursor = 'not-allowed'; }
+    if (radiusRow) { radiusRow.style.opacity = '0.4'; radiusRow.style.pointerEvents = 'none'; }
+    if (r0cb)      { r0cb.checked = true;  r0cb.disabled = true; }
+    if (r1cb)      { r1cb.checked = false; r1cb.disabled = true; }
+  } else {
+    if (nBandEl)   { nBandEl.disabled = false;
+                     nBandEl.style.opacity = ''; nBandEl.style.cursor = ''; }
+    if (radiusRow) { radiusRow.style.opacity = ''; radiusRow.style.pointerEvents = ''; }
+    if (r0cb)      { r0cb.disabled = false; }
+    if (r1cb)      { r1cb.disabled = false; }
+  }
+
+  htUpdateTotalRuns();
+}
+
+function htUpdateTotalRuns() {
+  const nBand   = parseInt(document.getElementById('ht-n-per-band')?.value, 10) || 2;
+  const r0      = document.getElementById('ht-radius-0')?.checked ? 1 : 0;
+  const r1      = document.getElementById('ht-radius-1')?.checked ? 1 : 0;
+  const nRadii  = Math.max(r0 + r1, 1);
+  const scType  = document.getElementById('ht-scenario-type')?.value || '';
+  const isNet   = ['edge_penalty','edge_remove'].includes(scType);
+  const total   = isNet ? 3 : 3 * nRadii * nBand;
+  const el = document.getElementById('ht-total-runs');
+  if (el) el.textContent = total;
+}
+
+function htDownloadPlot() {
+  const img = document.getElementById('ht-batch-plot');
+  if (!img || !img.src || img.src === window.location.href) return;
+  const a = document.createElement('a');
+  a.href = img.src;
+  a.download = 'hidden_trends_batch.png';
+  a.click();
+}
+
+async function runHiddenTrends() {
+  const btn        = document.getElementById('btn-ht-run');
+  const statusEl   = document.getElementById('ht-status');
+  const resultsEl  = document.getElementById('ht-results');
+  const index       = document.getElementById('ht-index').value;
+  const scType      = document.getElementById('ht-scenario-type').value;
+  const nPerBand    = parseInt(document.getElementById('ht-n-per-band').value, 10) || 2;
+  const seed        = parseInt(document.getElementById('ht-seed').value, 10);
+  const amenityType = document.getElementById('ht-amenity-type').value;
+  const factor      = parseFloat(document.getElementById('ht-factor').value) || 2.0;
+  const radii       = [
+    ...(document.getElementById('ht-radius-0')?.checked ? [0] : []),
+    ...(document.getElementById('ht-radius-1')?.checked ? [1] : []),
+  ];
+  if (radii.length === 0) {
+    statusEl.textContent = 'Select at least one radius.'; return;
+  }
+
+  btn.disabled   = true;
+  resultsEl.classList.add('hidden');
+  const totalRuns = parseInt(document.getElementById('ht-total-runs')?.textContent, 10) || '?';
+  statusEl.textContent = `Running ${totalRuns} scenarios…`;
+  setStatus('Running Hidden Trends batch analysis…', 'running');
+
+  try {
+    const r = await post('/api/hidden_trends/run', {
+      index, scenario_type: scType, n_per_band: nPerBand, seed,
+      amenity_type: amenityType, factor, radii,
+    });
+    if (r.status !== 'ok') { statusEl.textContent = 'Error: ' + r.message; return; }
+
+    // Aggregated plot
+    if (r.batch_plot) setImg('ht-batch-plot', r.batch_plot);
+
+    resultsEl.classList.remove('hidden');
+    const n = (r.runs || []).filter(r => !r.error).length;
+    statusEl.textContent = `✓ ${n} runs complete.`;
+    setStatus('✓ Hidden Trends batch complete', 'ok');
+  } catch(e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    setStatus('Hidden Trends error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
 }

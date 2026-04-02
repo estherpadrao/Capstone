@@ -1,0 +1,103 @@
+digraph ConnectivitySchemaClean2 {
+
+  rankdir = LR;
+  splines = ortho;   // cleaner right-angle routing
+  compound = true;
+
+  graph [fontname="Helvetica",
+         fontsize=11,
+         pad="0.6",
+         nodesep="0.9",
+         ranksep="1.2",
+         bgcolor="white"];
+
+  node [fontname="Helvetica",
+        fontsize=10,
+        style="rounded,filled",
+        margin="0.25,0.18",
+        color="#000000"];
+
+  edge [arrowsize=0.8,
+        penwidth=1.1,
+        color="#000000"];
+
+  /* === COLUMN 1: INPUTS === */
+
+  subgraph cluster_inputs {
+    label="Data Inputs";
+    style="rounded,filled";
+    color="#445f73";
+    fillcolor="#F4FAFF";
+
+    boundary  [label="City boundary", shape=box, fillcolor="white"];
+    amenities [label="OSM amenities", shape=box, fillcolor="white"];
+    suppliers [label="OSM suppliers", shape=box, fillcolor="white"];
+    census    [label="Census (ACS)", shape=box, fillcolor="white"];
+    network   [label="Transport network\n(OSM + GTFS)", shape=box, fillcolor="white"];
+  }
+
+  /* === COLUMN 2: SHARED === */
+
+  subgraph cluster_shared {
+    label="Shared Infrastructure";
+    style="rounded,filled";
+    color="#516d5d";
+    fillcolor="#F3FFF8";
+
+    hexgrid [label="H3 hex grid", shape=box3d, fillcolor="white"];
+    travel  [label="Multimodal travel times\n(walk · transit · drive)",
+             shape=box3d, fillcolor="white"];
+  }
+
+  /* === COLUMN 3: INDICES === */
+
+  subgraph cluster_indices {
+    label="Connectivity Indices";
+    style="rounded,filled";
+    color="#e69f2d";
+    fillcolor="#FFF8EE";
+
+    pci [label="PCI\nPedestrian Connectivity\n[0–100]",
+         shape=ellipse, fillcolor="white"];
+
+    bci [label="BCI\nBusiness Connectivity\n[0–100]",
+         shape=ellipse, fillcolor="white"];
+  }
+
+  /* === COLUMN 4: OUTPUTS === */
+
+  subgraph cluster_outputs {
+    label="Outputs";
+    style="rounded,filled";
+    color="#d14452";
+    fillcolor="#FFF5F6";
+
+    outputs [label="Maps + summary statistics",
+             shape=note, fillcolor="white"];
+  }
+
+  params [label="Model parameters\n(decay · speeds · weights)",
+          shape=parallelogram,
+          fillcolor="white",
+          color="#666"];
+
+  /* === EDGES (with spacing control) === */
+
+  boundary  -> hexgrid [minlen=2];
+  network   -> travel  [minlen=2];
+  hexgrid   -> travel  [minlen=2];
+
+  amenities -> pci     [minlen=2];
+  travel    -> pci     [minlen=2];
+
+  suppliers -> bci     [minlen=2];
+  census    -> bci     [minlen=2];
+  travel    -> bci     [minlen=2];
+
+  params -> travel [style=dashed, minlen=2];
+  params -> pci    [style=dashed, minlen=2];
+  params -> bci    [style=dashed, minlen=2];
+
+  pci -> outputs [minlen=2];
+  bci -> outputs [minlen=2];
+}

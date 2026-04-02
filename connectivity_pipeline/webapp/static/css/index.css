@@ -73,6 +73,29 @@ td{color:var(--text)}
   opacity:0;transition:opacity .12s;
   max-width:320px;white-space:normal;line-height:1.4;
 }
+/* Sticky table header — Excel-style frozen row */
+.sticky-head th{
+  position:sticky;top:0;z-index:2;
+  background:#242638;
+  box-shadow:0 2px 0 var(--border);
+  color:var(--text);font-weight:700;
+  border-bottom:2px solid var(--accent);
+}
+/* Sidebar collapsible info boxes */
+.info-box{border:1px solid var(--border);border-radius:7px;margin-top:10px;background:var(--bg)}
+.info-box summary{
+  padding:6px 10px;font-size:.74rem;font-weight:600;color:var(--muted);
+  cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;user-select:none}
+.info-box summary::-webkit-details-marker{display:none}
+.info-box summary::before{content:'▸ ';font-size:.68rem}
+details[open].info-box>summary::before{content:'▾ '}
+.info-box-body{padding:8px 10px 10px;font-size:.74rem;color:var(--muted);
+  line-height:1.65;border-top:1px solid var(--border)}
+.info-box-body p{margin-bottom:5px}
+.info-box-body strong{color:var(--text)}
+/* Sensitivity stacked blocks */
+.sens-block-pci{border-left:3px solid var(--accent)}
+.sens-block-bci{border-left:3px solid var(--accent2)}
 /* About tab prose */
 .about-prose{max-width:780px;line-height:1.75;font-size:.9rem;color:var(--text)}
 .about-prose h1{font-size:1.25rem;font-weight:700;margin-bottom:16px;color:var(--accent)}

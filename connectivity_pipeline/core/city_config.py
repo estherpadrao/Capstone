@@ -110,44 +110,8 @@ CITY_CONFIGS: Dict[str, Dict[str, Any]] = {
         "park_threshold":     0.90,
         "airport_locations":  [(40.6413, -73.7781), (40.7769, -73.8740)],  # JFK, LGA
         "use_local_polygon":  False,
-        "local_polygon_path": None,
-    },
-
-    "Chicago, Illinois, USA": {
-        "display_name":     "Chicago, IL",
-        "h3_resolution":    8,
-        "state_fips":       "17",
-        "county_fips":      "031",
-        "census_year":      2022,
-        "gtfs_path":        _data("chicago_gtfs.zip"),
-        "gtfs_url":         None,
-        "travel_speeds": {
-            "walk":    4.8,
-            "bike":    14.0,
-            "drive":   22.0,
-            "transit": 15.0,
-        },
-        "travel_costs": {
-            "walk":    0.00,
-            "bike":    3.30,
-            "drive":   10.00,
-            "transit": 2.50,
-        },
-        "time_penalties": {
-            "transit_wait":   10.0,
-            "transit_board":   0.5,
-            "parking_search": 10.0,
-            "bike_unlock":     1.0,
-        },
-        "median_hourly_wage": 30.00,
-        "max_travel_time":    90,
-        "park_threshold":     0.90,
-        "airport_locations":  [(41.9742, -87.9073), (41.7868, -87.7522)],  # ORD, MDW
-        "use_local_polygon":  False,
-        "local_polygon_path": None,
-    },
-
-    # Add more cities following the same pattern
+        "local_polygon_path": _data("nyc_polygon.geojson"),  # optional; if use_local_polygon=True, must provide
+    }
 }
 
 

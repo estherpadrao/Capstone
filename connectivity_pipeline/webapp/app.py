@@ -69,6 +69,7 @@ from analysis.impact import (
     run_pci_edge_penalty, run_pci_edge_removal,
     run_bci_supplier_change,
     run_bci_edge_penalty, run_bci_edge_removal,
+    run_batch_scenarios,
 )
 from analysis.isochrones import (
     run_isochrone_analysis,
@@ -929,6 +930,95 @@ def sensitivity_bci():
 # button depends on (pci, bci, grid, ham, bci_hansen, …).
 # ---------------------------------------------------------------------------
 
+@app.route("/api/scenario/hex_geojson", methods=["GET"])
+def scenario_hex_geojson():
+    """GeoJSON of hex polygons with score property, for the native Leaflet map."""
+    s = get_state(sid())
+    if "grid" not in s:
+        return jsonify({"status": "error", "message": "No grid in session."}), 400
+    index = request.args.get("index", "pci")
+    scores = s.get(index)
+    gdf = s["grid"].gdf.copy()
+    gdf["_score"] = gdf["hex_id"].map(scores) if scores is not None else 0.0
+    geojson = gdf[["hex_id", "_score", "geometry"]].to_json()
+    return Response(geojson, mimetype="application/json")
+
+
+@app.route("/api/scenario/edge_geojson", methods=["GET"])
+def scenario_edge_geojson():
+    """GeoJSON LineStrings for the drive network edges, for the native Leaflet map."""
+    s = get_state(sid())
+    net = s.get("network")
+    if net is None:
+        return jsonify({"type": "FeatureCollection", "features": []})
+    G = net.networks.get("drive")
+    if G is None:
+        return jsonify({"type": "FeatureCollection", "features": []})
+    edges = list(G.edges(data=True))
+    if len(edges) > 15_000:
+        import random as _random
+        rng = _random.Random(42)
+        edges = rng.sample(edges, 15_000)
+    features = []
+    for u, v, data in edges:
+        try:
+            uy, ux = G.nodes[u].get("y", 0), G.nodes[u].get("x", 0)
+            vy, vx = G.nodes[v].get("y", 0), G.nodes[v].get("x", 0)
+            if not (ux or uy) or not (vx or vy):
+                continue
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "LineString",
+                             "coordinates": [[ux, uy], [vx, vy]]},
+                "properties": {"u": str(u), "v": str(v),
+                               "time_min": round(float(data.get("time_min", 0.0)), 3)},
+            })
+        except Exception:
+            continue
+    return Response(
+        __import__("json").dumps({"type": "FeatureCollection", "features": features}),
+        mimetype="application/json",
+    )
+
+
+@app.route("/api/scenario/hex_list", methods=["GET"])
+def scenario_hex_list():
+    """Return hex IDs + scores (PCI preferred, then BCI) for the picker table."""
+    s = get_state(sid())
+    if "grid" not in s:
+        return jsonify({"status": "error", "message": "No grid in session."}), 400
+    pci = s.get("pci")
+    bci = s.get("bci")
+    scores = pci if pci is not None else bci
+    label  = "pci" if pci is not None else "bci"
+    hexes  = []
+    for hid in s["grid"].gdf["hex_id"].tolist():
+        v = float(scores[hid]) if scores is not None and hid in scores else None
+        hexes.append({"hex_id": hid, "score": v, "label": label})
+    hexes.sort(key=lambda x: (x["score"] is None, -(x["score"] or 0)))
+    return jsonify({"status": "ok", "hexes": hexes})
+
+
+@app.route("/api/scenario/edge_list", methods=["GET"])
+def scenario_edge_list():
+    """Return drive-network edges (u, v, time_min) for the edge picker table."""
+    s = get_state(sid())
+    net = s.get("network")
+    if net is None:
+        return jsonify({"status": "error", "message": "No network in session."}), 400
+    G = net.networks.get("drive")
+    if G is None:
+        return jsonify({"status": "ok", "edges": []})
+    edges = []
+    for u, v, data in G.edges(data=True):
+        edges.append({
+            "u": str(u), "v": str(v),
+            "time_min": round(float(data.get("time_min", 0.0)), 3),
+        })
+    edges.sort(key=lambda x: -x["time_min"])
+    return jsonify({"status": "ok", "edges": edges[:2000]})
+
+
 @app.route("/api/scenario/network_map", methods=["GET"])
 def scenario_network_map():
     """
@@ -973,11 +1063,14 @@ def scenario_network_map_view():
             status=400, mimetype="text/html",
         )
     try:
+        index = request.args.get("index", "pci")
+        pci_s = s.get("pci") if index == "pci" else None
+        bci_s = s.get("bci") if index == "bci" else None
         m = make_network_map(
             grid      = s["grid"],
             net       = s.get("network"),
-            pci       = s.get("pci"),
-            bci       = s.get("bci"),
+            pci       = pci_s,
+            bci       = bci_s,
             city_name = s.get("city_name", ""),
         )
         return Response(m._repr_html_(), status=200, mimetype="text/html")
@@ -1002,14 +1095,14 @@ def scenario_amenity_types():
         "education":   "schools / facilities",
         "health":      "clinics / hospitals",
         "community":   "community centres",
+        "food_retail": "food / retail outlets",
+        "transit":     "transit stops",
     }
     total_weight = sum(
         l.weight for l in mass_calc.layers.values() if l.weight > 0
     ) or 1.0
     types = []
     for name, layer in mass_calc.layers.items():
-        if layer.weight <= 0:
-            continue
         raw_range = float(layer.raw_values.max() - layer.raw_values.min())
         types.append({
             "name":         name,
@@ -1145,5 +1238,71 @@ def scenario_run_bci():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route("/api/hidden_trends/run", methods=["POST"])
+def hidden_trends_run():
+    """Run a stratified batch of random fast-path scenarios.
+
+    Body (all optional):
+        index         : "pci" | "bci"          (default "pci")
+        scenario_type : "amenity_remove" | "amenity_add"   (PCI)
+                      | "supplier_remove" | "supplier_add" (BCI)
+        n_per_cell    : int  — runs per (stratum × radius) cell (default 2)
+        seed          : int  — random seed for reproducibility (default 42)
+    """
+    s    = get_state(sid())
+    data = request.get_json() or {}
+
+    index         = data.get("index", "pci")
+    scenario_type = data.get("scenario_type", "amenity_remove")
+    n_per_band    = max(1, min(int(data.get("n_per_band", 2)), 20))
+    seed          = int(data.get("seed", 42))
+    amenity_type  = data.get("amenity_type", "education")
+    factor        = float(data.get("factor", 2.0))
+    radii_input   = data.get("radii", None)   # list of ints, e.g. [0, 1]
+
+    # Validate required session state
+    network_types = {"edge_penalty", "edge_remove"}
+    if index == "pci":
+        required = ["grid", "ham", "mass_calc", "pci", "user_params", "city_cfg"]
+        if scenario_type in network_types:
+            required.append("network")
+    else:
+        required = ["grid", "bci_hansen", "mass_calc_bci", "bci", "user_params"]
+        if scenario_type in network_types:
+            required.append("network")
+    missing = [k for k in required if k not in s]
+    if missing:
+        needs_rerun = any(k in ("ham", "bci_hansen", "network") for k in missing)
+        msg = (
+            f"Server was restarted — please re-run {index.upper()} once to restore "
+            f"the in-memory model (missing: {', '.join(missing)})."
+            if needs_rerun else
+            f"Run {index.upper()} first (missing: {', '.join(missing)})."
+        )
+        return jsonify({"status": "error", "message": msg}), 400
+
+    # Validate scenario ↔ index compatibility
+    pci_types = {"amenity_remove", "amenity_add", "edge_penalty", "edge_remove"}
+    bci_types = {"supplier_remove", "supplier_add", "edge_penalty", "edge_remove"}
+    if index == "pci" and scenario_type not in pci_types:
+        return jsonify({"status": "error",
+                        "message": f"Scenario '{scenario_type}' is not a PCI scenario."}), 400
+    if index == "bci" and scenario_type not in bci_types:
+        return jsonify({"status": "error",
+                        "message": f"Scenario '{scenario_type}' is not a BCI scenario."}), 400
+
+    try:
+        result = run_batch_scenarios(
+            s, index, scenario_type, n_per_band, seed, amenity_type, factor,
+            radii=radii_input)
+        return jsonify({"status": "ok", **result})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5001)
+    # use_reloader=False prevents the auto-reloader from restarting the process
+    # and clearing the in-memory STATE dict (which holds ham, bci_hansen, network).
+    # debug=True is kept for readable tracebacks.
+    app.run(debug=True, host="0.0.0.0", port=5001, use_reloader=False)

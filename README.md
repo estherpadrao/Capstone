@@ -1,32 +1,241 @@
 # Connectivity Pipeline
 
-A modular, web-deployable pipeline for computing and visualising two urban accessibility indices:
+A modular, web-deployable pipeline for computing and visualising two urban accessibility indices across H3 hexagonal grids:
 
-- **PCI** — *People Connectivity Index*: measures residential livability based on how well people can reach amenities by walking, cycling, driving, and transit.
-- **BCI** — *Business Connectivity Index*: measures commercial viability by quantifying access to customers (market), workers (labour), and suppliers across three component-specific transport networks.
+- **PCI — People Connectivity Index**: measures residential livability based on how well people can reach amenities by walking, cycling, driving, and transit.
+- **BCI — Business Connectivity Index**: measures commercial viability by quantifying access to customers (market), workers (labour), and business suppliers across three component-specific transport networks.
 
-Both indices use a Hansen gravity model with Gaussian distance decay, multi-modal travel-time networks, and H3 hexagonal grids.
+Both indices use a **Hansen gravity model** with exponential distance decay, multi-modal Dijkstra travel-time networks, and **Uber H3 hexagonal grids**.
 
 ---
 
-## Quick Start
+## Demo
+
+> 📹 **Video walkthrough:** *(Loom link coming soon)*
+
+---
+
+## What It Does
+
+### People Connectivity Index (PCI)
+
+For every hex cell in a city, PCI answers: *"how accessible are daily amenities — health, education, parks, food, transit, and community — when weighted by how far a person is realistically willing to travel?"*
+
+The score accounts for:
+- Multi-modal travel (walk, bike, drive, transit via GTFS)
+- Income-adjusted cost-of-time (richer areas are penalised for high opportunity cost)
+- Active street bonus (denser intersections reward walkability)
+- Amenity importance weights sourced from Zheng et al. (2021)
+
+### Business Connectivity Index (BCI)
+
+For every hex cell, BCI answers: *"how attractive is this location for businesses, given access to customers, workers, and suppliers?"*
+
+Three independent accessibility components are computed:
+- **Market access** — reach weighted by population × purchasing power (walk + transit)
+- **Labour access** — reach weighted by employed population (drive + transit)
+- **Supplier access** — reach weighted by commercial/industrial density (drive)
+
+Each uses its own decay rate (β) and is combined into a single normalised score.
+
+---
+
+## Full Pipeline Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        USER INPUT                               │
+│         City selection · Parameters · OSM tag toggles           │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                   ┌────────▼────────┐
+                   │   STEP 1: INIT  │
+                   │─────────────────│
+                   │ • Fetch city    │
+                   │   boundary      │
+                   │   (OSM/GeoJSON) │
+                   │ • Build H3 hex  │
+                   │   grid (res 8,  │
+                   │   ~460 m cells) │
+                   │ • Fetch OSM     │
+                   │   amenities +   │
+                   │   suppliers     │
+                   │ • Compute PCI   │
+                   │   mass surface  │
+                   │   (weighted +   │
+                   │   Gaussian      │
+                   │   smoothed)     │
+                   │ • Compute BCI   │
+                   │   market/labour │
+                   │   /supplier     │
+                   │   masses        │
+                   └────────┬────────┘
+                            │
+               ┌────────────▼────────────┐
+               │   STEP 2: BUILD NETWORK │
+               │─────────────────────────│
+               │ • Walk network (OSMnx)  │
+               │ • Bike network (OSMnx)  │
+               │ • Drive network (OSMnx) │
+               │ • Transit network       │
+               │   (GTFS → stop graph)   │
+               │ • Fetch Census ACS:     │
+               │   income · population   │
+               │   · employed labour     │
+               └────────────┬────────────┘
+                            │
+               ┌────────────▼────────────┐
+               │   STEP 3: COMPUTE       │
+               │─────────────────────────│
+               │ Dijkstra travel times   │
+               │ (cached per mode)       │
+               │          ↓              │
+               │ Hansen accessibility    │
+               │ A_i = Σ M_j ×          │
+               │   exp(−β × t_ij) ×     │
+               │   CostAdj_i            │
+               │          ↓              │
+               │ PCI: active-street      │
+               │ bonus + normalise       │
+               │ → score [0–100]         │
+               │          ↓              │
+               │ BCI: 3 components ×     │
+               │ own β → combine         │
+               │ → score [0–100]         │
+               └────────────┬────────────┘
+                            │
+          ┌─────────────────▼──────────────────┐
+          │              RESULTS                │
+          │────────────────────────────────────│
+          │  Interactive maps (Folium/Leaflet)  │
+          │  Topography & component plots       │
+          │  Statistics: mean · Gini · quantile │
+          │  Neighbourhood-level breakdown      │
+          │  Comparative analysis (PCI vs BCI)  │
+          │  Sensitivity & scenario testing     │
+          │  Saved to webapp/results/*.pkl      │
+          └────────────────────────────────────┘
+```
+
+---
+
+## How to Run It
+
+### 1. Install dependencies
 
 ```bash
-# 1. Clone / unzip the project
 cd connectivity_pipeline
-
-# 2. Install dependencies
 pip install -r requirements.txt
-
-# 3. (Optional) Place city data in data/
-#    - GTFS zip:        data/muni_gtfs-current.zip  (or whatever filename you configure)
-#    - Local boundary:  data/sf_polygon.geojson
-
-# 4. Run the web app
-python webapp/app.py
-
-# 5. Open http://localhost:5000 in your browser
 ```
+
+Or use the provided Conda environment:
+
+```bash
+conda env create -f environment.yml
+conda activate connectivity_pipeline
+```
+
+### 2. (Optional) Add city data
+
+Place files in `connectivity_pipeline/data/`:
+
+| File | Purpose |
+|------|---------|
+| `muni_gtfs-current.zip` | GTFS transit feed (highly recommended for transit routing) |
+| `sf_polygon.geojson` | Local boundary polygon (optional — fetched from OSM otherwise) |
+
+### 3. Start the web app
+
+```bash
+python webapp/app.py
+```
+
+Open **http://localhost:5001** in your browser.
+
+---
+
+## What to Expect
+
+### First run — full pipeline (~5–15 min depending on city size)
+
+When you click **▶ PCI** or **▶ BCI** for the first time on a city, the pipeline runs all three steps in sequence:
+
+| Step | What happens | Typical time |
+|------|-------------|--------------|
+| Init | Boundary fetch, H3 grid, OSM amenity/supplier download, mass surface | 1–3 min |
+| Build Network | Walk/bike/drive/transit graph construction, Census ACS fetch | 2–8 min |
+| Compute | Dijkstra travel times (all hex pairs), accessibility model, scoring | 1–5 min |
+
+A **status bar** at the bottom of the page shows the current stage and completion.
+
+### Subsequent runs — parameter changes only (~10–60 sec)
+
+After the network is built, changing parameters (β, weights, tag toggles) only reruns the affected downstream steps:
+
+| Change | Recomputes |
+|--------|-----------|
+| `hansen_beta` | Accessibility → score only |
+| Amenity weights | Mass surface → accessibility → score |
+| OSM tag toggle | Re-fetch category → mass → accessibility → score |
+| BCI β values | That component's accessibility → BCI |
+| City change | Everything — full rebuild |
+
+Click **↺ Recompute** in the sidebar after changing parameters.
+
+### Restoring saved results (~5–15 sec)
+
+Click **Restore Saved Results** to reload a previously computed run from disk without re-running the pipeline.
+
+---
+
+## Web App Tour
+
+The app is a single-page interface with a **sidebar** (controls) and **tab panel** (results).
+
+### Sidebar
+
+| Section | What it does |
+|---------|-------------|
+| **City** | Select the city to analyse |
+| **Run Index** | ▶ PCI / ▶ BCI / ▶ Run Both / Restore Saved Results |
+| **PCI Parameters** | Hansen β, active street λ, amenity weights, OSM tag toggles |
+| **BCI Parameters** | β market/labour/supplier, interface λ, combination method, supplier tags |
+
+Each section has a collapsible **ⓘ explanation box** — click to read what the parameters do.
+
+### Tabs
+
+| Tab | Contents |
+|-----|---------|
+| **About** | Methodology overview and data sources |
+| **PCI** | Topography plots, 3D surface, component breakdown, interactive map, neighbourhood table, distribution |
+| **BCI** | Mass maps (market/labour/supplier), component plots, interactive BCI map, distribution |
+| **Compare** | Correlation stats, scatter plot, distribution comparison, spatial side-by-side map — unlocks after both PCI and BCI are run |
+| **Diagnostics** | Network validation (edge/node counts, mode coverage), mass layer summaries |
+| **Sensitivity** | One-at-a-time parameter sensitivity: tornado chart + score-change table. PCI and BCI results stack on top of each other |
+| **Scenario Testing** | Interactive Leaflet map; modify amenities, suppliers, or travel-time edges and see the delta on the score map |
+
+---
+
+## Where to Find Results
+
+### In the web app
+
+All results are displayed interactively in the relevant tab immediately after computation.
+
+### On disk
+
+Saved results (pickled session state) are written to:
+
+```
+connectivity_pipeline/webapp/results/<City_Name>.pkl
+```
+
+The pickle contains the full session dict including the H3 grid with all computed columns, scores, mass layers, and visualisation-ready data. It **does not** include the network graph (too large — rebuilt from OSM/GTFS on restore).
+
+### Outputs directory
+
+If you export any static plots outside the webapp, they land in `Outputs/<CityName>/`.
 
 ---
 
@@ -35,176 +244,181 @@ python webapp/app.py
 ```
 connectivity_pipeline/
 │
-├── core/                       # Shared building blocks (PCI + BCI both use these)
-│   ├── h3_helper.py            # File 1  — H3 hexagonal grid utilities
-│   ├── osm_fetcher.py          # File 2  — OSM amenity + supplier data fetcher
-│   ├── boundary_grid.py        # File 3  — City boundary fetch + grid construction
-│   ├── census_fetcher.py       # File 4  — US Census ACS + TIGER data
-│   ├── mass_calculator.py      # File 5  — PCI topographic mass surface
-│   ├── network_builder.py      # File 6  — Multi-modal network (walk/bike/drive/transit)
-│   └── city_config.py          #          — City configuration registry
+├── core/                       # Shared building blocks (used by both PCI and BCI)
+│   ├── h3_helper.py            # H3 hex grid utilities
+│   ├── osm_fetcher.py          # OSM amenity + supplier data fetcher
+│   ├── boundary_grid.py        # City boundary fetch + grid construction
+│   ├── census_fetcher.py       # US Census ACS + TIGER data
+│   ├── mass_calculator.py      # PCI weighted mass surface + Gaussian smoothing
+│   ├── network_builder.py      # Multi-modal network (walk/bike/drive/transit)
+│   └── city_config.py          # City configuration registry
 │
 ├── pci/
-│   ├── pci_calculator.py       # File 7  — Hansen accessibility + PCI score
-│   └── pci_analysis.py         # File 8  — PCI maps, distributions, statistics
+│   ├── pci_calculator.py       # Hansen accessibility model + PCI scoring
+│   ├── pci_plots.py            # Topography, 3D surface, component, distribution plots
+│   ├── pci_maps.py             # Interactive Folium map + neighbourhood overlays
+│   ├── pci_stats.py            # Mean, Gini, quantiles
+│   └── pci_analysis.py         # Unified analysis interface (imports from above)
 │
 ├── bci/
-│   ├── bci_masses.py           # Files 9–11 — Market, Labour, Supplier mass calculators
-│   ├── bci_calculator.py       # File 12 — BCI Hansen model + final score
-│   └── bci_analysis.py         # File 13 — BCI maps, distributions, statistics
+│   ├── bci_masses.py           # Market, Labour, Supplier mass calculators
+│   ├── bci_calculator.py       # Per-component Hansen models + BCI final score
+│   ├── bci_plots.py            # Mass maps, component plots, distribution
+│   ├── bci_maps.py             # Interactive BCI Folium map
+│   ├── bci_stats.py            # Mean, Gini, quantiles
+│   └── bci_analysis.py         # Unified analysis interface
 │
 ├── analysis/
-│   ├── comparative_analysis.py # File 14 — PCI vs BCI comparison (only if both run)
-│   └── isochrones.py           # File 15 — Isochrone validation + network diagnostics
+│   ├── comparative_analysis.py # PCI vs BCI: correlations, spatial maps, quadrant
+│   ├── sensitivity.py          # One-at-a-time (OAT) parameter sensitivity
+│   ├── network_diagnostics.py  # Network validation + topography diagnostics
+│   ├── isochrones.py           # Isochrone-based accessibility analysis
+│   ├── impact.py               # Scenario testing (fast/slow paths, non-destructive)
+│   └── shared.py               # Shared helpers (neighbourhood stats, colour palettes)
 │
 ├── webapp/
-│   ├── app.py                  # Flask web application (API + UI)
+│   ├── app.py                  # Flask app — 40+ API routes, session management
+│   ├── about.md                # About tab markdown content
+│   ├── results/                # Persisted results (city-specific .pkl files)
 │   ├── templates/
-│   │   └── index.html          # Single-page frontend
-│   └── static/                 # CSS/JS assets (optional overrides)
+│   │   ├── index.html          # Single-page app shell
+│   │   └── partials/           # One HTML file per tab + sidebar
+│   └── static/
+│       ├── css/index.css       # Global stylesheet
+│       └── js/app.js           # Client-side state + API wrappers + map logic
 │
 ├── data/                       # City data files (gitignored)
-│   ├── muni_gtfs-current.zip   # GTFS transit feed
-│   └── sf_polygon.geojson      # Optional local boundary polygon
+│   └── muni_gtfs-current/      # San Francisco GTFS transit feed
 │
 ├── requirements.txt
-└── README.md
+└── environment.yml
 ```
 
 ---
 
 ## Parameter Guide
 
-### City-locked parameters (configured in `core/city_config.py`, not user-editable)
+### City-locked parameters (`core/city_config.py`)
+
+These are set per city and are not exposed in the UI.
 
 | Parameter | Description |
 |-----------|-------------|
-| `h3_resolution` | Hex grid resolution (8 = ~460m hexes) |
+| `h3_resolution` | Hex grid resolution (8 ≈ 460 m cells) |
 | `state_fips` / `county_fips` | US Census FIPS codes |
 | `census_year` | ACS 5-year survey year |
 | `gtfs_path` | Path to GTFS transit zip |
 | `travel_speeds` | Mode-specific speeds (km/h) |
 | `travel_costs` | Mode-specific trip costs (USD) |
-| `time_penalties` | Transit wait, parking search, bike unlock (min) |
-| `median_hourly_wage` | Used for income-adjusted cost-of-time |
+| `time_penalties` | Transit wait, parking, bike unlock (min) |
+| `median_hourly_wage` | For income-adjusted cost-of-time |
 | `park_threshold` | Park coverage fraction above which hex is masked |
 | `max_travel_time` | Dijkstra cutoff (minutes) |
 | `airport_locations` | (lat, lng) pairs for BCI urban interface bonus |
 
-### User-editable parameters (available in the webapp sidebar)
+### User-editable parameters (sidebar)
 
 #### PCI
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `hansen_beta` | 0.08 | Global distance decay β — higher = people prefer closer destinations |
-| `active_street_lambda` | 0.30 | Bonus weight for streets with high intersection density |
-| `amenity_weights` | health 0.319, education 0.276, parks 0.255, community 0.148 | Importance weights per amenity type (Zheng et al. 2021) |
-| OSM tag toggles | all on | Enable/disable individual amenity categories from OSM fetch |
+| `hansen_beta` | 0.08 | Distance decay β — higher = people prefer closer destinations |
+| `active_street_lambda` | 0.30 | Bonus for streets with high intersection density |
+| `amenity_weights` | health 0.319, education 0.276, parks 0.255, community 0.148 | Per-category importance weights (Zheng et al. 2021) |
+| OSM tag toggles | all on | Enable/disable individual amenity categories |
 
 #### BCI
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `beta_market` | 0.12 | Decay for customer access — customers are more distance-sensitive |
-| `beta_labour` | 0.05 | Decay for worker access — workers tolerate longer commutes |
-| `beta_supplier` | 0.10 | Decay for supplier/business service access |
-| `interface_lambda` | 0.15 | Weight of airport/urban-edge proximity bonus |
-| `bci_method` | weight_free | `weight_free`: BCI = sum of normalised components; `weighted`: custom weights |
-| `market_weight` | 0.40 | (weighted mode only) |
-| `labour_weight` | 0.35 | (weighted mode only) |
-| `supplier_weight` | 0.25 | (weighted mode only) |
-| Supplier tag toggles | all on | Toggle OSM supplier categories: offices, industrial, commercial, wholesale, finance |
-
----
-
-## Modular Recomputation
-
-The pipeline is designed so that changing a parameter only rerenders what is necessary:
-
-| Change | What is recomputed |
-|--------|-------------------|
-| `hansen_beta` | Accessibility scores → PCI only |
-| `amenity_weights` | Mass surface → Accessibility → PCI |
-| OSM tag toggle | Re-fetch affected category → Mass → Accessibility → PCI |
-| `beta_market/labour/supplier` | BCI travel times for affected component → BCI |
-| Network (city change) | Everything — full rebuild |
-
-The **↺ Recompute** button in the sidebar appears when any parameter is changed. It skips the slow network and OSM fetch steps and only reruns the accessibility and scoring computations.
+| `beta_market` | 0.12 | Customer access decay — customers are more distance-sensitive |
+| `beta_labour` | 0.05 | Worker commute decay — workers tolerate longer travel |
+| `beta_supplier` | 0.10 | Business service decay |
+| `interface_lambda` | 0.15 | Airport/urban-edge proximity bonus weight |
+| `bci_method` | weight_free | `weight_free`: equal sum; `weighted`: custom proportions |
+| Supplier tag toggles | all on | Toggle OSM commercial categories: offices, industrial, commercial, wholesale, finance |
 
 ---
 
 ## Adding a New City
 
 1. Open `core/city_config.py`.
-2. Add a new entry to `CITY_CONFIGS` following the pattern of an existing city.
-3. Place the GTFS zip at the path specified in `gtfs_path` (under `data/`).
-4. If you have a boundary GeoJSON, set `use_local_polygon: True` and point `local_polygon_path` to it; otherwise the boundary is fetched from OpenStreetMap.
-5. Restart the Flask app — the new city appears in the dropdown automatically.
+2. Add an entry to `CITY_CONFIGS` following the pattern of an existing city.
+3. Place the GTFS zip at the path set in `gtfs_path` (under `data/`).
+4. For a custom boundary: set `use_local_polygon: True` and point `local_polygon_path` to a GeoJSON file. Otherwise the boundary is fetched automatically from OpenStreetMap.
+5. Restart the Flask app — the city appears in the dropdown automatically.
 
 ---
 
-## Running PCI and BCI Independently
+## API Reference (key routes)
 
-PCI and BCI can be run independently. They share the boundary, grid, network, and census data when run together (BCI reuses all of PCI's expensive infrastructure), but each can be triggered separately from the webapp or the API.
+The Flask app exposes a REST API used by the frontend. You can also call it directly.
 
-**PCI only:**
 ```bash
-curl -X POST http://localhost:5000/api/pci/init -H "Content-Type: application/json" \
+# Run PCI pipeline
+curl -X POST http://localhost:5001/api/pci/init \
+  -H "Content-Type: application/json" \
   -d '{"city_name": "San Francisco, California, USA"}'
-curl -X POST http://localhost:5000/api/pci/build_network
-curl -X POST http://localhost:5000/api/pci/compute
-curl http://localhost:5000/api/pci/visualize
-```
+curl -X POST http://localhost:5001/api/pci/build_network
+curl -X POST http://localhost:5001/api/pci/compute
+curl http://localhost:5001/api/pci/visualize
 
-**BCI only (after PCI has been run, the network is reused):**
-```bash
-curl -X POST http://localhost:5000/api/bci/init
-curl -X POST http://localhost:5000/api/bci/build_network
-curl -X POST http://localhost:5000/api/bci/compute
-curl http://localhost:5000/api/bci/visualize
+# Run BCI (reuses PCI network if already built)
+curl -X POST http://localhost:5001/api/bci/init
+curl -X POST http://localhost:5001/api/bci/build_network
+curl -X POST http://localhost:5001/api/bci/compute
+curl http://localhost:5001/api/bci/visualize
+
+# Check session state
+curl http://localhost:5001/api/session/status
+
+# Restore saved results
+curl -X POST http://localhost:5001/api/restore \
+  -H "Content-Type: application/json" \
+  -d '{"city_name": "San Francisco, California, USA"}'
 ```
 
 ---
 
-## Methodology
+## Interpretation Guide
 
-### PCI — People Connectivity Index
+### PCI Score
 
-1. **H3 grid**: City clipped to H3 resolution-8 hexagons (~460m).
-2. **Amenity fetch**: Health, education, parks, community, food/retail, transit from OSM.
-3. **Mass surface**: Weighted composite (Zheng et al. 2021 weights), Gaussian-smoothed.
-4. **Network**: Walk + bike + drive + transit (GTFS if available, OSM stops as fallback).
-5. **Income adjustment**: Census ACS tract-level median household income → cost-of-time penalty per hex.
-6. **Hansen accessibility**: `A_i = Σ_j M_j × exp(−β × t_ij) × CostAdj_i`
-7. **Active street bonus**: `PCI_raw = A_i × (1 + λ × Degree_i)` where Degree is street network intersection density.
-8. **Normalisation**: Min-max to [0, 100]. Park-dominated hexes optionally masked.
-9. **City score**: Area-weighted mean. Gini coefficient for equity.
+| Score | Meaning |
+|-------|---------|
+| 70–100 | Excellent — high multi-modal amenity access |
+| 50–70 | Good — moderate connectivity |
+| 30–50 | Fair — gaps in coverage or affordability |
+| 0–30 | Poor — major connectivity deficits |
 
-### BCI — Business Connectivity Index
+### BCI Score
 
-1. **Three masses**:
-   - Market Mass = Population × Normalised Income (purchasing power)
-   - Labour Mass = Employed population 16+ (Census ACS)
-   - Supplier Mass = OSM business/commercial feature density
-2. **Component networks**: Market uses walk+transit; Labour uses drive+transit; Supplier uses drive only.
-3. **Per-component Hansen**: Separate β for each component.
-4. **Urban interface**: Airport proximity + city-edge score × λ.
-5. **Combination**: Weight-free (`BCI = ΣA_k/max`) or weighted.
-6. **Normalisation**: [0, 100].
+| Score | Meaning |
+|-------|---------|
+| 70–100 | Prime commercial location — strong access to customers, labour, and suppliers |
+| 40–70 | Viable — strong in one or two components |
+| 0–40 | Limited commercial potential from an accessibility standpoint |
 
-### Comparative Analysis
+### Gini Coefficient
 
-Available when both indices are computed. Includes:
-- Pearson, Spearman, Kendall correlations
-- Distribution comparisons (histogram, box, violin, Q-Q)
-- Spatial maps: PCI, BCI, difference (PCI−BCI), quadrant classification
-- Interactive folium layer-control map
+0 = perfectly equal distribution of accessibility across all hexes.
+1 = entirely concentrated in a single hex. Values above 0.4 indicate significant spatial inequality.
+
+### Quadrant Analysis (Compare tab)
+
+| Quadrant | Interpretation |
+|----------|---------------|
+| High PCI + High BCI | Mixed-use live-work neighbourhoods |
+| High PCI + Low BCI | Residential neighbourhoods with good amenities |
+| Low PCI + High BCI | Commercial or industrial zones |
+| Low PCI + Low BCI | Underserved areas — connectivity deficits for both residents and businesses |
 
 ---
 
 ## Data Sources
 
 | Source | Used for |
-|--------|----------|
+|--------|---------|
 | OpenStreetMap (via OSMnx) | City boundary, street networks, amenities, suppliers |
 | Uber H3 | Hexagonal spatial indexing |
 | US Census ACS 5-year | Median income, population, employed population |
@@ -213,24 +427,31 @@ Available when both indices are computed. Includes:
 
 ---
 
-## Interpretation Guide
+## Methodology Summary
 
-| PCI | Meaning |
-|-----|---------|
-| 70–100 | Excellent — high multi-modal amenity access |
-| 50–70  | Good — moderate connectivity |
-| 30–50  | Fair — gaps in coverage or affordability |
-| 0–30   | Poor — major connectivity deficits |
+### PCI
 
-**Gini coefficient**: 0 = perfectly equal distribution across hexes; 1 = entirely concentrated.
+```
+Amenities (OSM) → Weighted mass surface (Gaussian smoothed)
+Network (OSMnx + GTFS) → Multi-modal travel times t_ij
+Census ACS → Income-adjusted cost-of-time CostAdj_i
 
-**BCI hotspots** (top 10%): locations most attractive to businesses due to combined customer, worker, and supplier access.
+A_i = Σ_j  M_j × exp(−β × t_ij) × CostAdj_i
+PCI_raw_i = A_i × (1 + λ × StreetDegree_i)
+PCI_i = MinMax(PCI_raw) × 100
+```
 
-**Quadrant analysis**:
-- High PCI + High BCI: mixed-use live-work neighbourhoods
-- High PCI + Low BCI: residential neighbourhoods
-- Low PCI + High BCI: commercial or industrial zones
-- Low PCI + Low BCI: underserved areas
+### BCI
+
+```
+Market mass  = Population_j × NormIncome_j      → β_market,  walk+transit
+Labour mass  = EmployedPop_j                     → β_labour,  drive+transit
+Supplier mass = OSM commercial density_j         → β_supplier, drive
+
+BCI_i = f(A_market_i, A_labour_i, A_supplier_i) + Interface_i × λ
+      [weight-free: sum of normalised components | weighted: custom mix]
+BCI_i = MinMax(BCI_raw) × 100
+```
 
 ---
 

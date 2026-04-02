@@ -62,8 +62,6 @@ def compute_bci_stats(bci: pd.Series, grid: HexGrid, bci_calc=None) -> dict:
             return round(float(valid.reindex(d.index).corr(d)), 3) if len(d) > 2 else None
 
         summary = {
-            "n_hotspots":        int((valid >= valid.quantile(0.90)).sum()),
-            "n_underserved":     int((valid <= valid.quantile(0.10)).sum()),
             "corr_market_bci":   _safe_corr(am),
             "corr_labour_bci":   _safe_corr(al),
             "corr_supplier_bci": _safe_corr(as_),

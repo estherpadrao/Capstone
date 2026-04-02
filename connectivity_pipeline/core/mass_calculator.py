@@ -5,6 +5,8 @@ Computes the weighted amenity mass surface (the "topography") used by PCI.
 Weights and decay coefficients are fully user-configurable.
 """
 
+from unicodedata import name
+
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -133,18 +135,53 @@ class MassCalculator:
         features = gdf.to_crs("EPSG:4326").copy()
 
         if use_area:
-            # Area in m²
+            # Compute intersection area between each park polygon and each hexagon.
+            # This correctly splits a park that spans multiple hexagons — each hex
+            # gets only the area that actually falls within it.
             features_m = features.to_crs(epsg=3857)
-            features["_area"] = features_m.geometry.area
-            features["geometry"] = features.geometry.centroid
-            joined = gpd.sjoin(
-                hex_gdf,
-                features[["geometry", "_area"]],
-                how="left",
-                predicate="intersects",
-            )
-            joined["_area"] = joined["_area"].fillna(0)
-            raw = joined.groupby("hex_id")["_area"].sum()
+            features_m = features_m[features_m.geometry.notna() & ~features_m.geometry.is_empty].copy()
+            features_m["geometry"] = features_m.geometry.make_valid()
+
+            def _to_polygonal(geom):
+                if geom is None or geom.is_empty:
+                    return None
+                if geom.geom_type in {"Polygon", "MultiPolygon"}:
+                    return geom
+                if geom.geom_type == "GeometryCollection":
+                    polys = [
+                        g for g in geom.geoms
+                        if g.geom_type in {"Polygon", "MultiPolygon"} and not g.is_empty
+                    ]
+                    if not polys:
+                        return None
+                    return unary_union(polys)
+                return None
+
+            features_m["geometry"] = features_m.geometry.apply(_to_polygonal)
+            features_m = features_m[features_m.geometry.notna() & ~features_m.geometry.is_empty].copy()
+            hex_m      = hex_gdf.to_crs(epsg=3857)
+            try:
+                clipped = gpd.overlay(
+                    hex_m[["hex_id", "geometry"]],
+                    features_m[["geometry"]],
+                    how="intersection",
+                    keep_geom_type=False,
+                )
+                clipped["_area"] = clipped.geometry.area
+                raw = clipped.groupby("hex_id")["_area"].sum()
+            except Exception:
+                # Fallback to centroid method if overlay fails (e.g. invalid geometries)
+                features_m["_area"] = features_m.geometry.area
+                features["_area"]   = features_m["_area"].values
+                features["geometry"] = features.geometry.centroid
+                joined = gpd.sjoin(
+                    hex_gdf,
+                    features[["geometry", "_area"]],
+                    how="left",
+                    predicate="intersects",
+                )
+                joined["_area"] = joined["_area"].fillna(0)
+                raw = joined.groupby("hex_id")["_area"].sum()
         else:
             # Use centroid for polygon features
             pts = features.copy()

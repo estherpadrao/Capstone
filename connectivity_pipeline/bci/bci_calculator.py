@@ -387,22 +387,18 @@ class BCICalculator:
         if self._bci is None:
             return {}
         valid = self._bci.dropna()
-        peaks   = self.identify_peaks(90)
-        valleys = self.identify_valleys(10)
 
         am = self.components.get("A_market_norm", pd.Series(dtype=float))
         al = self.components.get("A_labour_norm", pd.Series(dtype=float))
         as_ = self.components.get("A_supplier_norm", pd.Series(dtype=float))
 
         return {
-            "mean":            round(float(valid.mean()), 2),
-            "median":          round(float(valid.median()), 2),
-            "std":             round(float(valid.std()), 2),
-            "min":             round(float(valid.min()), 2),
-            "max":             round(float(valid.max()), 2),
-            "n_hexagons":      int(len(valid)),
-            "n_hotspots":      int(len(peaks)),
-            "n_underserved":   int(len(valleys)),
+            "mean":              round(float(valid.mean()), 2),
+            "median":            round(float(valid.median()), 2),
+            "std":               round(float(valid.std()), 2),
+            "min":               round(float(valid.min()), 2),
+            "max":               round(float(valid.max()), 2),
+            "n_hexagons":        int(len(valid)),
             "corr_market_bci":   round(float(valid.corr(am.reindex(valid.index))), 3),
             "corr_labour_bci":   round(float(valid.corr(al.reindex(valid.index))), 3),
             "corr_supplier_bci": round(float(valid.corr(as_.reindex(valid.index))), 3),

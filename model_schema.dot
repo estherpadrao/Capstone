@@ -1,0 +1,304 @@
+/**
+ * Connectivity Pipeline — Model Schema (clean version)
+ * Render:  dot -Tsvg model_schema.dot -o model_schema.svg
+ *          dot -Tpng -Gdpi=150 model_schema.dot -o model_schema.png
+ */
+
+digraph ConnectivityModel {
+
+  rankdir  = TB;
+  compound = true;
+  splines  = curved;
+
+  graph [fontname="Helvetica Neue", fontsize=11, pad="0.8",
+         nodesep="0.5", ranksep="0.8", bgcolor="#F7F8FA"];
+  node  [fontname="Helvetica Neue", fontsize=10,
+         style="filled,rounded", margin="0.2,0.12"];
+  edge  [fontname="Helvetica Neue", fontsize=9,
+         arrowsize=0.85, penwidth=1.4, color="#555"];
+
+
+  /* ── force left-to-right column order ─── */
+  { rank=same; _i [style=invis]; _p [style=invis]; }
+  _i -> _p [style=invis];
+
+
+  /* ═══════════════════════════════════════
+     ①  DATA INPUTS
+  ═══════════════════════════════════════ */
+  subgraph cluster_inputs {
+    label    = "① DATA INPUTS";
+    style    = filled;  fillcolor = "#EBF5FB";
+    color    = "#1A5276"; fontcolor = "#1A5276";
+    fontname = "Helvetica Neue Bold"; fontsize = 12; margin = 16;
+
+    boundary [
+      label="City Boundary\nOSM polygon / local GeoJSON",
+      shape=cylinder, fillcolor="#AED6F1", color="#1A5276"
+    ];
+    amenities [
+      label="OSM Amenities\nhealth · education · parks\ncommunity · food · transit",
+      shape=cylinder, fillcolor="#AED6F1", color="#1A5276"
+    ];
+    suppliers [
+      label="OSM Suppliers\noffices · industrial\ncommercial · wholesale",
+      shape=cylinder, fillcolor="#AED6F1", color="#1A5276"
+    ];
+    census [
+      label="Census (ACS)\npopulation · income · labour",
+      shape=cylinder, fillcolor="#AED6F1", color="#1A5276"
+    ];
+    transport [
+      label="Transport Network\nOSM roads  +  GTFS feed",
+      shape=cylinder, fillcolor="#AED6F1", color="#1A5276"
+    ];
+  }
+
+
+  /* ═══════════════════════════════════════
+     ②  PARAMETERS
+  ═══════════════════════════════════════ */
+  subgraph cluster_params {
+    label    = "② PARAMETERS";
+    style    = filled;  fillcolor = "#F5EEF8";
+    color    = "#6C3483"; fontcolor = "#6C3483";
+    fontname = "Helvetica Neue Bold"; fontsize = 12; margin = 16;
+
+    city_cfg [
+      label="City Config\nH3 resolution · travel speeds\ncosts per mode · max travel time",
+      shape=parallelogram, fillcolor="#D7BDE2", color="#6C3483"
+    ];
+    pci_p [
+      label="PCI Parameters\nβ decay  ·  λ active-street\namenity weights per category",
+      shape=parallelogram, fillcolor="#D7BDE2", color="#6C3483"
+    ];
+    bci_p [
+      label="BCI Parameters\nβ_market · β_labour · β_supplier\ncombination method + weights",
+      shape=parallelogram, fillcolor="#D7BDE2", color="#6C3483"
+    ];
+  }
+
+
+  /* ═══════════════════════════════════════
+     ③  SHARED INFRASTRUCTURE
+  ═══════════════════════════════════════ */
+  subgraph cluster_infra {
+    label    = "③ SHARED INFRASTRUCTURE";
+    style    = filled;  fillcolor = "#FEF9E7";
+    color    = "#9A7D0A"; fontcolor = "#9A7D0A";
+    fontname = "Helvetica Neue Bold"; fontsize = 12; margin = 16;
+
+    hex_grid [
+      label="H3 Hex Grid\nhex_id · geometry · area_m²",
+      shape=box3d, fillcolor="#F9E79F", color="#9A7D0A"
+    ];
+    network [
+      label="Multimodal Network\nwalk · transit · drive graphs\nDijkstra travel-time cache",
+      shape=box3d, fillcolor="#F9E79F", color="#9A7D0A"
+    ];
+  }
+
+
+  /* ═══════════════════════════════════════
+     ④  PCI PIPELINE
+  ═══════════════════════════════════════ */
+  subgraph cluster_pci {
+    label    = "④ PCI — Pedestrian Connectivity";
+    style    = filled;  fillcolor = "#EAFAF1";
+    color    = "#1E8449"; fontcolor = "#1E8449";
+    fontname = "Helvetica Neue Bold"; fontsize = 12; margin = 16;
+
+    mass [
+      label="Amenity Mass Surface\ncount (facilities) or area (parks)\nnormalised · weighted composite",
+      shape=box, fillcolor="#ABEBC6", color="#1E8449"
+    ];
+    pci_access [
+      label="Hansen Accessibility\ne^(−β·t) × mass\nweighted by income",
+      shape=box, fillcolor="#ABEBC6", color="#1E8449"
+    ];
+    pci_score [
+      label="PCI Score\n[0 – 100]",
+      shape=ellipse, fillcolor="#1A7A3C", color="#0D5C27",
+      fontcolor="white", fontsize=11, style="filled"
+    ];
+
+    mass -> pci_access -> pci_score;
+  }
+
+
+  /* ═══════════════════════════════════════
+     ⑤  BCI PIPELINE
+  ═══════════════════════════════════════ */
+  subgraph cluster_bci {
+    label    = "⑤ BCI — Business Connectivity";
+    style    = filled;  fillcolor = "#EBF5FB";
+    color    = "#154360"; fontcolor = "#154360";
+    fontname = "Helvetica Neue Bold"; fontsize = 12; margin = 16;
+
+    bci_mass [
+      label="Mass Components\nmarket  M = pop × income\nlabour  L\nsupplier  S",
+      shape=box, fillcolor="#85C1E9", color="#154360"
+    ];
+    bci_access [
+      label="Component Accessibility\nmarket  (walk + transit)\nlabour  (drive + transit)\nsupplier  (drive)",
+      shape=box, fillcolor="#85C1E9", color="#154360"
+    ];
+    bci_score [
+      label="BCI Score\n[0 – 100]",
+      shape=ellipse, fillcolor="#1A4A7A", color="#0D2B4E",
+      fontcolor="white", fontsize=11, style="filled"
+    ];
+
+    bci_mass -> bci_access -> bci_score;
+  }
+
+
+  /* ═══════════════════════════════════════
+     ⑥  SCENARIO TESTING
+  ═══════════════════════════════════════ */
+  subgraph cluster_scenarios {
+    label    = "⑥ SCENARIO TESTING";
+    style    = filled;  fillcolor = "#FDEDEC";
+    color    = "#922B21"; fontcolor = "#922B21";
+    fontname = "Helvetica Neue Bold"; fontsize = 12; margin = 16;
+
+    sc_pci [
+      label="PCI Fast\namenity add / remove\n(reuse travel-time cache)",
+      shape=component, fillcolor="#FADBD8", color="#922B21"
+    ];
+    sc_bci [
+      label="BCI Fast\nsupplier add / remove\n(reuse travel-time cache)",
+      shape=component, fillcolor="#FADBD8", color="#922B21"
+    ];
+    sc_slow [
+      label="Slow  (PCI + BCI)\nedge penalty / removal\n+ full Dijkstra recompute",
+      shape=component, fillcolor="#F1948A", color="#922B21"
+    ];
+    sc_restore [
+      label="Non-destructive\ntry / finally  — full restore\nsession state never written",
+      shape=note, fillcolor="#FADBD8", color="#922B21", fontsize=9
+    ];
+
+    sc_pci  -> sc_restore [arrowhead=none, style=dashed];
+    sc_bci  -> sc_restore [arrowhead=none, style=dashed];
+    sc_slow -> sc_restore [arrowhead=none, style=dashed];
+  }
+
+
+  /* ═══════════════════════════════════════
+     ⑦  OUTPUTS
+  ═══════════════════════════════════════ */
+  subgraph cluster_outputs {
+    label    = "⑦ OUTPUTS  —  Capstone/Outputs/{city}/";
+    style    = filled;  fillcolor = "#FEF5E7";
+    color    = "#CA6F1E"; fontcolor = "#CA6F1E";
+    fontname = "Helvetica Neue Bold"; fontsize = 12; margin = 16;
+
+    pci_out [
+      label="PCI Plots + Map\ntopography · distribution\nchoropleth (folium)  .png / .html",
+      shape=note, fillcolor="#FAD7A0", color="#CA6F1E"
+    ];
+    bci_out [
+      label="BCI Plots + Map\nmasses · distribution\nchoropleth (folium)  .png / .html",
+      shape=note, fillcolor="#FAD7A0", color="#CA6F1E"
+    ];
+    sc_out [
+      label="Scenario Impact Report\ndelta map · Δ stats\ntop-10 most-affected hexes",
+      shape=note, fillcolor="#FAD7A0", color="#CA6F1E"
+    ];
+    saved [
+      label="Saved State  .pkl\nPCI · BCI · grid · mass\ncensus  (network excluded)",
+      shape=cylinder, fillcolor="#FAD7A0", color="#CA6F1E"
+    ];
+  }
+
+
+  /* ═══════════════════════════════════════
+     INTER-CLUSTER EDGES
+     (one representative edge per cluster pair;
+      arrow is clipped to cluster boundary)
+  ═══════════════════════════════════════ */
+
+  /* Inputs → Infrastructure */
+  boundary  -> hex_grid [
+    ltail=cluster_inputs, lhead=cluster_infra,
+    label="city boundary\nOSM / GTFS / census"
+  ];
+
+  /* Params → Infrastructure */
+  city_cfg  -> hex_grid [
+    ltail=cluster_params, lhead=cluster_infra,
+    label="resolution · speeds"
+  ];
+
+  /* Infrastructure → PCI */
+  hex_grid  -> mass [
+    ltail=cluster_infra, lhead=cluster_pci,
+    label="hex geometry\ntravel times"
+  ];
+
+  /* Infrastructure → BCI */
+  network   -> bci_mass [
+    ltail=cluster_infra, lhead=cluster_bci,
+    label="hex geometry\ntravel times"
+  ];
+
+  /* Amenities → PCI mass */
+  amenities -> mass [
+    ltail=cluster_inputs, lhead=cluster_pci,
+    label="amenity features"
+  ];
+
+  /* Suppliers + Census → BCI mass */
+  suppliers -> bci_mass [
+    ltail=cluster_inputs, lhead=cluster_bci,
+    label="supplier counts\ncensus masses"
+  ];
+
+  /* PCI params → PCI pipeline */
+  pci_p -> mass [
+    ltail=cluster_params, lhead=cluster_pci,
+    label="β · λ · weights"
+  ];
+
+  /* BCI params → BCI pipeline */
+  bci_p -> bci_mass [
+    ltail=cluster_params, lhead=cluster_bci,
+    label="β_m · β_l · β_s · λ"
+  ];
+
+  /* PCI → Scenarios */
+  pci_score -> sc_pci [
+    ltail=cluster_pci, lhead=cluster_scenarios,
+    label="baseline score", style=dashed, color="#922B21"
+  ];
+
+  /* BCI → Scenarios */
+  bci_score -> sc_bci [
+    ltail=cluster_bci, lhead=cluster_scenarios,
+    label="baseline score", style=dashed, color="#922B21"
+  ];
+
+  /* PCI → Outputs */
+  pci_score -> pci_out [
+    ltail=cluster_pci, lhead=cluster_outputs
+  ];
+
+  /* BCI → Outputs */
+  bci_score -> bci_out [
+    ltail=cluster_bci, lhead=cluster_outputs
+  ];
+
+  /* Scenarios → Outputs */
+  sc_restore -> sc_out [
+    ltail=cluster_scenarios, lhead=cluster_outputs,
+    label="delta map · impact stats"
+  ];
+
+  /* Scores → saved state */
+  pci_score -> saved [
+    ltail=cluster_pci, lhead=cluster_outputs,
+    label="save_results()", style=dashed
+  ];
+
+}
