@@ -25,4 +25,4 @@ flask>=3.0.0
 
 # GTFS parsing (optional but recommended)
 gtfs-kit>=6.0.0
-partridge>=2.0.0
+partridge>=1.1.0
